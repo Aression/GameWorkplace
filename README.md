@@ -6,7 +6,7 @@
 
 一款用于自动从录制的《战争雷霆》(War Thunder) 游戏视频中识别和导出连杀片段的工具。帮助玩家轻松获取精彩战斗瞬间，无需手动剪辑。
 
-![程序截图](doc\79aec47e-e3ba-4d87-ae83-a98e7bf24870.png)
+![程序截图](./doc/79aec47e-e3ba-4d87-ae83-a98e7bf24870.png)
 
 ## 主要功能
 
@@ -28,7 +28,7 @@
 
 ### 方法1：直接运行（推荐）
 
-1. 从[发布页面](https://github.com/your-username/wt-killstreak-exporter/releases)下载最新版本
+1. 从[发布页面](https://github.com/Aression/GameWorkplace/releases)下载最新版本
 2. 解压文件到任意位置
 3. 运行 `战雷连杀导出工具.exe`
 
@@ -61,72 +61,9 @@
    - YYYYMMDD_HHMMSS表示录制时间
    - Z表示连杀组序号
 
-## 文件命名说明
-
-本程序可以处理《战争雷霆》视频录制功能生成的以下格式文件名：
-
-```
-War Thunder 2024.06.18 - 19.29.51.02.DVR.mp4
-War Thunder 2025.04.14 - 14.00.35.105.DVR.mp4
-```
-
-## 常见问题
-
-**Q: 为什么我启动程序后看不到任何界面？**  
-A: 请确保您的电脑满足系统要求，并尝试以管理员身份运行程序。
-
-**Q: 处理时间太长怎么办？**  
-A: 视频处理是计算密集型任务。如果有NVIDIA显卡，程序会自动使用GPU加速。您也可以尝试减小处理的视频文件数量。
-
-**Q: 我的视频文件没有被识别？**  
-A: 确保视频文件命名符合"War Thunder YYYY.MM.DD - HH.MM.SS.XX.DVR.mp4"格式。
-
-**Q: 输出的视频质量不高？**  
-A: 默认使用较高的视频质量设置。如需更高质量，可以编辑源代码中的编码参数。
-
-**Q: 状态文件保存在哪里？**
-
-A: 取决于具体使用方式：
-
-1. 当使用GUI版本(`wt_killstreak_exporter.py`)时：
-   - 文件保存在应用数据目录中，由`APP_DIR`变量定义
-   - 在Windows系统上，路径通常是：`C:\Users\用户名\AppData\Roaming\战雷连杀导出工具\processing_state.json`
-   - 完整路径通过这行代码设置：`state_file = os.path.join(APP_DIR, "processing_state.json")`
-
-2. 当直接运行`exporter.py`时：
-   - 若没有设置`STATE_FILE_PATH`，则使用默认值`STATE_FILE = 'processing_state.json'`
-   - 此时文件保存在当前工作目录中
-
-状态文件存储了上次处理的视频时间戳，这样程序可以跳过已经处理过的视频文件，避免重复处理。
-
-您可以在GUI程序的日志区域看到具体的数据目录路径，会显示为：`[时间] 数据目录: 路径`。如需手动管理或重置处理状态，可以直接删除或修改此文件。
-
-
 ## 开发者信息
-更多安装信息参照 [安装指南](doc/INSTALL.md)
 
-### 环境设置
-
-```bash
-# 克隆仓库
-git clone https://github.com/your-username/wt-killstreak-exporter.git
-cd wt-killstreak-exporter
-
-# 创建虚拟环境
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-
-# 安装依赖
-pip install -r requirements.txt
-```
-
-### 打包应用
-
-```bash
-# 使用打包脚本
-python build.py
-```
+更多安装信息参照 [安装指南](./doc/INSTALL.md)
 
 ## 许可证
 
