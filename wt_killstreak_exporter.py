@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QSlider, QTableWidget, QTableWidgetItem, QHeaderView,
     QSplitter, QTabWidget, QToolButton, QSizePolicy, QComboBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QSize, QUrl
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QSize, QUrl, QTimer
 from PyQt5.QtGui import QIcon, QFont, QDesktopServices, QPixmap
 
 # 导入处理模块
@@ -109,7 +109,8 @@ class ProcessingThread(QThread):
                 min_kills=self.min_kills,
                 progress_callback=self._progress_callback,
                 state_file=state_file,
-                temp_dir=APP_DIR
+                temp_dir=APP_DIR,
+                is_running=lambda: self.is_running  # 传递检查函数
             )
             
             # 通知UI处理完成
@@ -150,6 +151,7 @@ class ProcessingThread(QThread):
     def stop(self):
         """停止处理"""
         self.is_running = False
+        self.update_signal.emit("正在停止处理，请稍候...")
 
 
 class MainWindow(QMainWindow):
@@ -276,6 +278,12 @@ class MainWindow(QMainWindow):
         self.open_output_button.setMinimumHeight(40)
         action_layout.addWidget(self.open_output_button)
         
+        self.reset_button = QPushButton("重置处理时间戳")
+        self.reset_button.setIcon(QIcon.fromTheme("edit-clear"))
+        self.reset_button.clicked.connect(self._reset_timestamp)
+        self.reset_button.setMinimumHeight(40)
+        action_layout.addWidget(self.reset_button)
+        
         main_layout.addLayout(action_layout)
         
         # 进度条
@@ -346,6 +354,30 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "警告", "输出目录不存在")
     
+    def _reset_timestamp(self):
+        """重置处理时间戳，允许重新处理所有视频"""
+        state_file = os.path.join(APP_DIR, "processing_state.json")
+        
+        if os.path.exists(state_file):
+            reply = QMessageBox.question(
+                self, '确认重置', 
+                "确定要重置处理时间戳吗？这将允许程序重新处理所有视频文件，包括已经处理过的。",
+                QMessageBox.Yes | QMessageBox.No, 
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                try:
+                    os.remove(state_file)
+                    self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 处理时间戳已重置，下次运行将处理所有视频文件")
+                    QMessageBox.information(self, "重置成功", "处理时间戳已成功重置，下次运行将处理所有视频文件。")
+                except Exception as e:
+                    self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 重置时间戳失败: {str(e)}")
+                    QMessageBox.warning(self, "重置失败", f"无法重置处理时间戳: {str(e)}")
+        else:
+            self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ℹ️ 未找到处理状态文件，无需重置")
+            QMessageBox.information(self, "提示", "未找到处理状态文件，当前已经处于初始状态，下次运行将处理所有视频文件。")
+    
     def _validate_inputs(self):
         """验证输入参数有效性"""
         input_dir = self.input_dir_edit.text()
@@ -415,9 +447,26 @@ class MainWindow(QMainWindow):
             
             if reply == QMessageBox.Yes:
                 self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 用户已取消处理")
+                self.progress_bar.setFormat("正在停止...")
+                # 禁用停止按钮，防止多次点击
+                self.stop_button.setEnabled(False)
+                # 显示取消中状态
+                self.statusBar().showMessage("正在取消处理...")
+                
+                # 停止处理线程
                 self.processing_thread.stop()
-                self.processing_thread.wait()  # 等待线程结束
-                self._process_complete(False, "处理已取消")
+                
+                # 使用定时器检查线程状态，避免UI卡死
+                def check_thread_status():
+                    if not self.processing_thread.isRunning():
+                        # 线程已停止，恢复UI状态
+                        self._process_complete(False, "处理已取消")
+                        timer.stop()
+                
+                # 创建定时器
+                timer = QTimer(self)
+                timer.timeout.connect(check_thread_status)
+                timer.start(200)  # 每200毫秒检查一次
     
     def _update_log(self, message):
         """更新日志输出"""
@@ -468,15 +517,33 @@ class MainWindow(QMainWindow):
             )
             
             if reply == QMessageBox.Yes:
+                # 停止处理线程
                 self.processing_thread.stop()
-                self.processing_thread.wait(1000)  # 等待最多1秒
-                event.accept()
+                
+                # 创建一个定时器来检查线程状态，避免UI卡死
+                self.close_timer = QTimer(self)
+                self.close_timer.timeout.connect(self._check_close_status)
+                self.close_timer.start(200)  # 每200毫秒检查一次
+                
+                # 保存要关闭的事件以便稍后处理
+                self.pending_close_event = event
+                event.ignore()  # 先不关闭
             else:
                 event.ignore()
         else:
             # 保存设置
             self._save_settings()
             event.accept()
+    
+    def _check_close_status(self):
+        """检查线程是否已经停止，以便完成窗口关闭"""
+        if not self.processing_thread.isRunning():
+            self.close_timer.stop()
+            # 保存设置
+            self._save_settings()
+            # 使用默认的close事件处理
+            QMainWindow.closeEvent(self, self.pending_close_event)
+            self.pending_close_event.accept()
 
 
 if __name__ == "__main__":
