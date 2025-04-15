@@ -27,6 +27,7 @@ from PyQt5.QtGui import QIcon, QFont, QDesktopServices, QPixmap
 
 # 导入处理模块
 import exporter
+from exporter.core.processor import process_videos
 
 # 设置日志
 logging.basicConfig(
@@ -37,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 路径常量
-VERSION = "1.0.0"
+VERSION = "1.0.2"
 APP_NAME = "战雷连杀导出工具"
 ORG_NAME = "WTKillStreakExporter"
 
@@ -100,7 +101,7 @@ class ProcessingThread(QThread):
             state_file = os.path.join(APP_DIR, "processing_state.json")
             
             # 执行视频处理
-            exporter.process_videos(
+            process_videos(
                 input_dir=self.input_dir,
                 output_dir=self.output_dir,
                 lead=self.lead_time,

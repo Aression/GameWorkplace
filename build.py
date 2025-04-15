@@ -13,7 +13,7 @@ from pathlib import Path
 
 # 打包配置
 APP_NAME = "战雷连杀导出工具"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 MAIN_SCRIPT = "wt_killstreak_exporter.py"
 ICON_FILE = "icon.ico"  # 如果有图标文件
 INCLUDE_FILES = []  # 需要包含的额外文件
