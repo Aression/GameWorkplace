@@ -6,7 +6,7 @@
 
 1. 从发布页面下载最新版本的程序压缩包
 2. 解压到任意位置
-3. 双击运行"战雷连杀导出工具.exe"
+3. 双击运行"连杀导出工具.exe"
 
 ### 方法二：从源码运行
 
@@ -40,7 +40,7 @@
 ## 使用方法
 
 1. 启动程序后，您将看到主界面
-2. 设置输入目录（《战争雷霆》录像所在文件夹）
+2. 设置输入目录（录像所在文件夹）
 3. 设置输出目录（导出的连杀视频将保存的位置）
 4. 调整参数：
    - 击杀前保留：第一次击杀前保留多少秒（默认10秒）
@@ -96,7 +96,7 @@ A: 取决于具体使用方式：
 
 1. 当使用GUI版本(`wt_killstreak_exporter.py`)时：
    - 文件保存在应用数据目录中，由`APP_DIR`变量定义
-   - 在Windows系统上，路径通常是：`C:\Users\用户名\AppData\Roaming\战雷连杀导出工具\processing_state.json`
+   - 在Windows系统上，路径通常是：`C:\Users\用户名\AppData\Roaming\连杀导出工具\processing_state.json`
    - 完整路径通过这行代码设置：`state_file = os.path.join(APP_DIR, "processing_state.json")`
 
 2. 当直接运行`exporter.py`时：

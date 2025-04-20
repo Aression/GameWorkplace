@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-战雷连杀片段导出工具 - GUI版本
-用于自动从录制的战雷游戏视频中识别和导出连杀片段
+连杀片段导出工具 - 现代UI版
+用于自动从录制的游戏视频中识别和导出连杀片段
 """
 
 import os
@@ -14,20 +14,36 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-# PyQt5 GUI库
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox, 
-    QTextEdit, QProgressBar, QGroupBox, QFormLayout, QMessageBox,
-    QCheckBox, QSlider, QTableWidget, QTableWidgetItem, QHeaderView,
-    QSplitter, QTabWidget, QToolButton, QSizePolicy, QComboBox
-)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QSize, QUrl, QTimer
+# PyQt5和PyQt-Fluent-Widgets库
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QSize, QUrl, QTimer, QStandardPaths
 from PyQt5.QtGui import QIcon, QFont, QDesktopServices, QPixmap
+from PyQt5.QtWidgets import QApplication, QFileDialog, QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QGridLayout, QCheckBox, QSizePolicy, QDialog
+
+# 导入Fluent Widgets组件
+from qfluentwidgets import (
+    MessageBox, InfoBarPosition, InfoBar, PrimaryPushButton, 
+    PushButton, ComboBox, SpinBox, setTheme, Theme, ProgressBar,
+    ToolButton, LineEdit, TextEdit, 
+    FluentIcon as FIF, SubtitleLabel, CardWidget, StrongBodyLabel, BodyLabel,
+    ScrollArea, TitleLabel, SimpleCardWidget
+)
+
+from qfluentwidgets.common.icon import FluentIconBase
+from qfluentwidgets.common.style_sheet import isDarkTheme
+
+try:
+    # 尝试导入新版本的InfoBar管理器
+    from qfluentwidgets.components.widgets.info_bar import InfoBarManager
+except ImportError:
+    # 如果失败，使用旧版本的接口
+    from qfluentwidgets.components.widgets.info_bar import InfoBar as InfoBarManager
 
 # 导入处理模块
 import exporter
 from exporter.core.processor import process_videos
+
+# 获取程序版本
+VERSION = exporter.__version__
 
 # 设置日志
 logging.basicConfig(
@@ -38,29 +54,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 路径常量
-VERSION = "1.0.2"
-APP_NAME = "战雷连杀导出工具"
+APP_NAME = "连杀导出工具"
 ORG_NAME = "WTKillStreakExporter"
 
 def get_app_dir():
     """获取应用程序数据目录"""
-    # 在Windows上使用%APPDATA%/[APP_NAME]
-    # 在Mac上使用~/Library/Application Support/[APP_NAME]
-    # 在Linux上使用~/.local/share/[APP_NAME]
-    if sys.platform == 'win32':
-        app_data = os.environ.get('APPDATA', '')
-        if app_data:
-            app_dir = os.path.join(app_data, APP_NAME)
-        else:
-            # 如果APPDATA不可用，使用应用程序目录
-            app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    elif sys.platform == 'darwin':
-        app_dir = os.path.expanduser(f"~/Library/Application Support/{APP_NAME}")
-    else:
-        app_dir = os.path.expanduser(f"~/.local/share/{APP_NAME}")
+    # 使用QStandardPaths获取跨平台的应用程序数据目录
+    app_data_location = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+    app_dir = os.path.join(app_data_location, APP_NAME)
     
     # 确保目录存在
     os.makedirs(app_dir, exist_ok=True)
+    logger.info(f"应用数据目录: {app_dir}")
     return app_dir
 
 # 获取应用程序目录
@@ -69,6 +74,20 @@ APP_DIR = get_app_dir()
 # 应用程序图标路径
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "icon.png")
 
+# 自定义图标类
+class AppIcon(FluentIconBase):
+    """ 自定义应用图标 """
+    
+    def __init__(self, icon_name):
+        super().__init__()
+        self.icon_name = icon_name
+        
+    def path(self, theme=Theme.AUTO, **kwargs):
+        if self.icon_name == "app":
+            return ICON_PATH
+        return ""
+
+# 处理线程类
 class ProcessingThread(QThread):
     """处理视频的后台线程"""
     update_signal = pyqtSignal(str)  # 进度更新信号
@@ -154,164 +173,257 @@ class ProcessingThread(QThread):
         self.is_running = False
         self.update_signal.emit("正在停止处理，请稍候...")
 
-
-class MainWindow(QMainWindow):
-    """主窗口"""
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle(f"战雷连杀片段导出工具 v{VERSION}")
-        self.setMinimumSize(800, 600)
-        
-        # 设置应用程序图标
-        if os.path.exists(ICON_PATH):
-            self.setWindowIcon(QIcon(ICON_PATH))
-        
-        # 加载设置
+# 主页界面
+class MainInterface(ScrollArea):
+    """主页界面"""
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self.parent_window = parent
         self.settings = QSettings(ORG_NAME, APP_NAME)
-        
-        # 初始化UI
-        self._init_ui()
-        
-        # 加载已保存的设置
-        self._load_settings()
-        
-        # 处理线程
+        self.init_ui()
         self.processing_thread = None
+        self.load_settings()
         
-    def _init_ui(self):
-        """初始化用户界面"""
-        # 主布局
-        main_widget = QWidget()
-        main_layout = QVBoxLayout(main_widget)
+    def init_ui(self):
+        """初始化主界面UI"""
+        # 创建主容器
+        self.main_widget = QWidget()
+        self.main_layout = QVBoxLayout(self.main_widget)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
+        self.main_layout.setSpacing(20)
         
-        # 顶部标题和版本
+        # 顶部标题
+        title_card = SimpleCardWidget(self.main_widget)
+        title_layout = QVBoxLayout(title_card)
+        
+        # 应用图标和标题
         header_layout = QHBoxLayout()
-        title_label = QLabel("战雷连杀片段导出工具")
-        title_label.setFont(QFont("Arial", 16, QFont.Bold))
-        header_layout.addWidget(title_label)
+        icon_label = QLabel()
+        if os.path.exists(ICON_PATH):
+            pixmap = QPixmap(ICON_PATH).scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            icon_label.setPixmap(pixmap)
+        else:
+            icon_label.setPixmap(FIF.VIDEO.icon().pixmap(64, 64))
+        icon_label.setFixedSize(64, 64)
+        header_layout.addWidget(icon_label)
         
-        version_label = QLabel(f"v{VERSION}")
-        version_label.setFont(QFont("Arial", 10))
-        version_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        header_layout.addWidget(version_label)
-        main_layout.addLayout(header_layout)
+        title_label_layout = QVBoxLayout()
+        title_text = TitleLabel("连杀片段导出工具")
+        title_label_layout.addWidget(title_text)
         
-        # 参数设置区域
-        settings_group = QGroupBox("参数设置")
-        settings_layout = QFormLayout()
+        description = BodyLabel(f"自动从录制的游戏视频中识别和导出连杀片段 (v{VERSION})")
+        title_label_layout.addWidget(description)
         
-        # 输入输出目录选择
+        header_layout.addLayout(title_label_layout, 1)
+        header_layout.addStretch(0)
+        
+        title_layout.addLayout(header_layout)
+        self.main_layout.addWidget(title_card)
+        
+        # 添加输入输出路径选择卡片
+        self.create_path_selection_card()
+        
+        # 添加参数设置卡片
+        self.create_parameter_settings_card()
+        
+        # 添加操作按钮卡片
+        self.create_action_buttons_card()
+        
+        # 添加进度条卡片
+        self.create_progress_card()
+        
+        # 添加弹性空间
+        self.main_layout.addStretch(1)
+        
+        # 设置主部件
+        self.setWidget(self.main_widget)
+        self.setWidgetResizable(True)
+    
+    def create_path_selection_card(self):
+        """创建路径选择卡片"""
+        path_card = CardWidget(self.main_widget)
+        path_layout = QVBoxLayout(path_card)
+        
+        # 标题
+        path_title = SubtitleLabel("路径设置")
+        path_layout.addWidget(path_title)
+        
+        # 输入目录
         input_layout = QHBoxLayout()
-        self.input_dir_edit = QLineEdit()
-        self.input_dir_edit.setPlaceholderText("选择战雷录像所在目录")
-        input_browse_btn = QPushButton("浏览...")
+        input_label = StrongBodyLabel("输入目录:")
+        input_label.setFixedWidth(70)
+        self.input_dir_edit = LineEdit()
+        self.input_dir_edit.setPlaceholderText("选择录像所在目录")
+        self.input_dir_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        input_browse_btn = PushButton("浏览...")
+        input_browse_btn.setIcon(FIF.FOLDER)
+        input_browse_btn.setFixedWidth(80)
         input_browse_btn.clicked.connect(self._browse_input_dir)
-        input_layout.addWidget(self.input_dir_edit)
+        
+        input_layout.addWidget(input_label)
+        input_layout.addWidget(self.input_dir_edit, 1)
         input_layout.addWidget(input_browse_btn)
-        settings_layout.addRow("输入目录:", input_layout)
+        path_layout.addLayout(input_layout)
         
+        # 输出目录
         output_layout = QHBoxLayout()
-        self.output_dir_edit = QLineEdit()
+        output_label = StrongBodyLabel("输出目录:")
+        output_label.setFixedWidth(70)
+        self.output_dir_edit = LineEdit()
         self.output_dir_edit.setPlaceholderText("选择导出片段保存目录")
-        output_browse_btn = QPushButton("浏览...")
+        self.output_dir_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        output_browse_btn = PushButton("浏览...")
+        output_browse_btn.setIcon(FIF.FOLDER)
+        output_browse_btn.setFixedWidth(80)
         output_browse_btn.clicked.connect(self._browse_output_dir)
-        output_layout.addWidget(self.output_dir_edit)
-        output_layout.addWidget(output_browse_btn)
-        settings_layout.addRow("输出目录:", output_layout)
         
-        # 连杀参数设置
-        param_layout = QHBoxLayout()
+        output_layout.addWidget(output_label)
+        output_layout.addWidget(self.output_dir_edit, 1)
+        output_layout.addWidget(output_browse_btn)
+        path_layout.addLayout(output_layout)
+        
+        self.main_layout.addWidget(path_card)
+    
+    def create_parameter_settings_card(self):
+        """创建参数设置卡片"""
+        param_card = CardWidget(self.main_widget)
+        param_layout = QVBoxLayout(param_card)
+        
+        # 标题
+        param_title = SubtitleLabel("连杀参数设置")
+        param_layout.addWidget(param_title)
+        
+        # 参数网格布局
+        param_grid = QGridLayout()
+        param_grid.setColumnStretch(1, 1)
+        param_grid.setColumnStretch(3, 1)
+        param_grid.setHorizontalSpacing(15)
+        param_grid.setVerticalSpacing(10)
         
         # 击杀前保留时间
-        self.lead_time_spinbox = QSpinBox()
+        lead_label = StrongBodyLabel("击杀前保留:")
+        self.lead_time_spinbox = SpinBox()
         self.lead_time_spinbox.setRange(1, 60)
         self.lead_time_spinbox.setValue(10)
         self.lead_time_spinbox.setSuffix(" 秒")
-        param_layout.addWidget(QLabel("击杀前保留:"))
-        param_layout.addWidget(self.lead_time_spinbox)
+        self.lead_time_spinbox.setMinimumWidth(100)
         
         # 最后击杀后保留时间
-        self.tail_time_spinbox = QSpinBox()
+        tail_label = StrongBodyLabel("击杀后保留:")
+        self.tail_time_spinbox = SpinBox()
         self.tail_time_spinbox.setRange(1, 60)
         self.tail_time_spinbox.setValue(5)
         self.tail_time_spinbox.setSuffix(" 秒")
-        param_layout.addWidget(QLabel("击杀后保留:"))
-        param_layout.addWidget(self.tail_time_spinbox)
+        self.tail_time_spinbox.setMinimumWidth(100)
         
         # 连杀时间阈值
-        self.threshold_spinbox = QSpinBox()
+        threshold_label = StrongBodyLabel("连杀间隔:")
+        self.threshold_spinbox = SpinBox()
         self.threshold_spinbox.setRange(5, 120)
         self.threshold_spinbox.setValue(30)
         self.threshold_spinbox.setSuffix(" 秒")
-        param_layout.addWidget(QLabel("连杀间隔:"))
-        param_layout.addWidget(self.threshold_spinbox)
+        self.threshold_spinbox.setMinimumWidth(100)
         
         # 最少击杀数
-        self.min_kills_spinbox = QSpinBox()
+        min_kills_label = StrongBodyLabel("最少击杀:")
+        self.min_kills_spinbox = SpinBox()
         self.min_kills_spinbox.setRange(2, 10)
         self.min_kills_spinbox.setValue(2)
         self.min_kills_spinbox.setSuffix(" 次")
-        param_layout.addWidget(QLabel("最少击杀:"))
-        param_layout.addWidget(self.min_kills_spinbox)
+        self.min_kills_spinbox.setMinimumWidth(100)
         
-        settings_layout.addRow("连杀参数:", param_layout)
-        settings_group.setLayout(settings_layout)
-        main_layout.addWidget(settings_group)
+        # 添加到网格布局
+        param_grid.addWidget(lead_label, 0, 0)
+        param_grid.addWidget(self.lead_time_spinbox, 0, 1)
+        param_grid.addWidget(tail_label, 0, 2)
+        param_grid.addWidget(self.tail_time_spinbox, 0, 3)
+        param_grid.addWidget(threshold_label, 1, 0)
+        param_grid.addWidget(self.threshold_spinbox, 1, 1)
+        param_grid.addWidget(min_kills_label, 1, 2)
+        param_grid.addWidget(self.min_kills_spinbox, 1, 3)
         
-        # 处理按钮和状态
-        action_layout = QHBoxLayout()
-        self.start_button = QPushButton("开始处理")
-        self.start_button.setIcon(QIcon.fromTheme("media-playback-start"))
+        param_layout.addLayout(param_grid)
+        self.main_layout.addWidget(param_card)
+    
+    def create_action_buttons_card(self):
+        """创建操作按钮卡片"""
+        button_card = CardWidget(self.main_widget)
+        button_layout = QHBoxLayout(button_card)
+        button_layout.setSpacing(10)
+        
+        # 创建一个按钮容器
+        button_container = QWidget()
+        button_grid = QGridLayout(button_container)
+        button_grid.setHorizontalSpacing(10)
+        button_grid.setVerticalSpacing(10)
+        
+        # 开始处理按钮
+        self.start_button = PrimaryPushButton("开始处理")
+        self.start_button.setIcon(FIF.PLAY)
         self.start_button.clicked.connect(self._start_processing)
         self.start_button.setMinimumHeight(40)
-        action_layout.addWidget(self.start_button)
+        self.start_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
-        self.stop_button = QPushButton("停止处理")
-        self.stop_button.setIcon(QIcon.fromTheme("media-playback-stop"))
+        # 停止处理按钮
+        self.stop_button = PushButton("停止处理")
+        self.stop_button.setIcon(FIF.CANCEL)
         self.stop_button.clicked.connect(self._stop_processing)
         self.stop_button.setEnabled(False)
         self.stop_button.setMinimumHeight(40)
-        action_layout.addWidget(self.stop_button)
+        self.stop_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
-        self.open_output_button = QPushButton("打开输出目录")
-        self.open_output_button.setIcon(QIcon.fromTheme("folder-open"))
+        # 打开输出目录按钮
+        self.open_output_button = PushButton("打开输出目录")
+        self.open_output_button.setIcon(FIF.FOLDER)
         self.open_output_button.clicked.connect(self._open_output_dir)
         self.open_output_button.setMinimumHeight(40)
-        action_layout.addWidget(self.open_output_button)
+        self.open_output_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
-        self.reset_button = QPushButton("重置处理时间戳")
-        self.reset_button.setIcon(QIcon.fromTheme("edit-clear"))
+        # 重置处理时间戳按钮
+        self.reset_button = PushButton("重置处理时间戳")
+        self.reset_button.setIcon(FIF.SYNC)
         self.reset_button.clicked.connect(self._reset_timestamp)
         self.reset_button.setMinimumHeight(40)
-        action_layout.addWidget(self.reset_button)
+        self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
-        main_layout.addLayout(action_layout)
+        # 在小屏幕上采用两行布局，在大屏幕上采用一行布局
+        button_grid.addWidget(self.start_button, 0, 0)
+        button_grid.addWidget(self.stop_button, 0, 1)
+        button_grid.addWidget(self.open_output_button, 1, 0)
+        button_grid.addWidget(self.reset_button, 1, 1)
+        
+        # 使两列宽度相等
+        button_grid.setColumnStretch(0, 1)
+        button_grid.setColumnStretch(1, 1)
+        
+        button_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        button_layout.addWidget(button_container)
+        
+        self.main_layout.addWidget(button_card)
+    
+    def create_progress_card(self):
+        """创建进度条卡片"""
+        progress_card = CardWidget(self.main_widget)
+        progress_layout = QVBoxLayout(progress_card)
+        
+        # 标题
+        progress_title = SubtitleLabel("处理进度")
+        progress_layout.addWidget(progress_title)
         
         # 进度条
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
+        self.progress_bar = ProgressBar()
+        self.progress_bar.setFixedHeight(8)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("%v / %m (%p%)")
-        main_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.progress_bar)
         
-        # 日志输出
-        log_group = QGroupBox("处理日志")
-        log_layout = QVBoxLayout()
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont("Consolas", 9))
-        log_layout.addWidget(self.log_text)
-        log_group.setLayout(log_layout)
-        main_layout.addWidget(log_group)
+        # 进度文本
+        self.progress_text = BodyLabel("准备就绪")
+        self.progress_text.setAlignment(Qt.AlignCenter)
+        progress_layout.addWidget(self.progress_text)
         
-        # 状态栏
-        self.statusBar().showMessage("准备就绪")
-        
-        # 设置中央控件
-        self.setCentralWidget(main_widget)
+        self.main_layout.addWidget(progress_card)
     
-    def _load_settings(self):
+    def load_settings(self):
         """从配置文件加载设置"""
         self.input_dir_edit.setText(self.settings.value("input_dir", ""))
         self.output_dir_edit.setText(self.settings.value("output_dir", ""))
@@ -319,8 +431,12 @@ class MainWindow(QMainWindow):
         self.tail_time_spinbox.setValue(int(self.settings.value("tail_time", 5)))
         self.threshold_spinbox.setValue(int(self.settings.value("threshold", 30)))
         self.min_kills_spinbox.setValue(int(self.settings.value("min_kills", 2)))
+        
+        # 应用日志字体大小设置
+        log_font_size = int(self.settings.value("log_font_size", 9))
+        self.progress_text.setFont(QFont("Consolas", log_font_size))
     
-    def _save_settings(self):
+    def save_settings(self):
         """保存当前设置到配置文件"""
         self.settings.setValue("input_dir", self.input_dir_edit.text())
         self.settings.setValue("output_dir", self.output_dir_edit.text())
@@ -353,31 +469,48 @@ class MainWindow(QMainWindow):
             # 使用系统默认程序打开文件夹
             QDesktopServices.openUrl(QUrl.fromLocalFile(output_dir))
         else:
-            QMessageBox.warning(self, "警告", "输出目录不存在")
+            MessageBox("警告", "输出目录不存在", self.parent_window).exec()
     
     def _reset_timestamp(self):
         """重置处理时间戳，允许重新处理所有视频"""
         state_file = os.path.join(APP_DIR, "processing_state.json")
         
         if os.path.exists(state_file):
-            reply = QMessageBox.question(
-                self, '确认重置', 
+            dialog = MessageBox(
+                "确认重置", 
                 "确定要重置处理时间戳吗？这将允许程序重新处理所有视频文件，包括已经处理过的。",
-                QMessageBox.Yes | QMessageBox.No, 
-                QMessageBox.No
+                self.parent_window
             )
             
-            if reply == QMessageBox.Yes:
+            if dialog.exec():
                 try:
                     os.remove(state_file)
-                    self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 处理时间戳已重置，下次运行将处理所有视频文件")
-                    QMessageBox.information(self, "重置成功", "处理时间戳已成功重置，下次运行将处理所有视频文件。")
+                    self._update_log("✅ 处理时间戳已重置，下次运行将处理所有视频文件")
+                    InfoBar.success(
+                        title="重置成功",
+                        content="处理时间戳已成功重置，下次运行将处理所有视频文件。",
+                        parent=self.parent_window,
+                        position=InfoBarPosition.TOP,
+                        duration=3000
+                    )
                 except Exception as e:
-                    self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 重置时间戳失败: {str(e)}")
-                    QMessageBox.warning(self, "重置失败", f"无法重置处理时间戳: {str(e)}")
+                    self._update_log(f"❌ 重置时间戳失败: {str(e)}")
+                    InfoBar.error(
+                        title="重置失败",
+                        content=f"无法重置处理时间戳: {str(e)}",
+                        parent=self.parent_window,
+                        position=InfoBarPosition.TOP,
+                        duration=3000
+                    )
         else:
-            self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ℹ️ 未找到处理状态文件，无需重置")
-            QMessageBox.information(self, "提示", "未找到处理状态文件，当前已经处于初始状态，下次运行将处理所有视频文件。")
+            self._update_log("ℹ️ 未找到处理状态文件，无需重置")
+            InfoBar.info(
+                title="提示",
+                content="未找到处理状态文件，当前已经处于初始状态，下次运行将处理所有视频文件。",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP,
+                duration=3000
+            )
     
     def _validate_inputs(self):
         """验证输入参数有效性"""
@@ -385,15 +518,30 @@ class MainWindow(QMainWindow):
         output_dir = self.output_dir_edit.text()
         
         if not input_dir:
-            QMessageBox.warning(self, "警告", "请选择输入目录")
+            InfoBar.warning(
+                title="警告",
+                content="请选择输入目录",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP
+            )
             return False
         
         if not os.path.exists(input_dir):
-            QMessageBox.warning(self, "警告", "输入目录不存在")
+            InfoBar.warning(
+                title="警告",
+                content="输入目录不存在",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP
+            )
             return False
         
         if not output_dir:
-            QMessageBox.warning(self, "警告", "请选择输出目录")
+            InfoBar.warning(
+                title="警告",
+                content="请选择输出目录",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP
+            )
             return False
         
         return True
@@ -404,7 +552,7 @@ class MainWindow(QMainWindow):
             return
         
         # 保存当前设置
-        self._save_settings()
+        self.save_settings()
         
         # 准备参数
         input_dir = self.input_dir_edit.text()
@@ -418,14 +566,15 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.progress_bar.setValue(0)
-        self.log_text.clear()
-        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 开始处理视频...")
-        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 输入目录: {input_dir}")
-        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 输出目录: {output_dir}")
-        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 参数: 前置={lead_time}秒, 后置={tail_time}秒, 阈值={threshold}秒, 最少击杀={min_kills}次")
-        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 数据目录: {APP_DIR}")
-        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 命令行窗口已隐藏，所有操作信息将显示在本日志中")
-        self.statusBar().showMessage("正在处理中...")
+        self.progress_text.setText("正在处理中...")
+        
+        # 更新日志
+        self._update_log("开始处理视频...")
+        self._update_log(f"输入目录: {input_dir}")
+        self._update_log(f"输出目录: {output_dir}")
+        self._update_log(f"参数: 前置={lead_time}秒, 后置={tail_time}秒, 阈值={threshold}秒, 最少击杀={min_kills}次")
+        self._update_log(f"数据目录: {APP_DIR}")
+        self._update_log("命令行窗口已隐藏，所有操作信息将显示在日志中")
         
         # 创建并启动处理线程
         self.processing_thread = ProcessingThread(
@@ -435,24 +584,30 @@ class MainWindow(QMainWindow):
         self.processing_thread.progress_signal.connect(self._update_progress)
         self.processing_thread.complete_signal.connect(self._process_complete)
         self.processing_thread.start()
+        
+        # 显示通知
+        InfoBar.success(
+            title="处理开始",
+            content="视频处理已开始，请耐心等待...",
+            parent=self.parent_window,
+            position=InfoBarPosition.TOP,
+            duration=3000
+        )
     
     def _stop_processing(self):
         """停止处理"""
         if self.processing_thread and self.processing_thread.isRunning():
-            reply = QMessageBox.question(
-                self, '确认停止', 
+            dialog = MessageBox(
+                "确认停止", 
                 "确定要停止当前处理任务吗？未完成的导出可能会丢失。",
-                QMessageBox.Yes | QMessageBox.No, 
-                QMessageBox.No
+                self.parent_window
             )
             
-            if reply == QMessageBox.Yes:
-                self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] 用户已取消处理")
-                self.progress_bar.setFormat("正在停止...")
+            if dialog.exec():
+                self._update_log("用户已取消处理")
+                self.progress_text.setText("正在停止...")
                 # 禁用停止按钮，防止多次点击
                 self.stop_button.setEnabled(False)
-                # 显示取消中状态
-                self.statusBar().showMessage("正在取消处理...")
                 
                 # 停止处理线程
                 self.processing_thread.stop()
@@ -471,20 +626,21 @@ class MainWindow(QMainWindow):
     
     def _update_log(self, message):
         """更新日志输出"""
-        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
-        # 滚动到底部
-        scrollbar = self.log_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        # 转发到主窗口的日志显示
+        if hasattr(self.parent_window, 'update_log'):
+            self.parent_window.update_log(message)
     
     def _update_progress(self, current, total):
         """更新进度条"""
         if total > 0:
             self.progress_bar.setMaximum(total)
             self.progress_bar.setValue(current)
+            self.progress_text.setText(f"进度: {current}/{total} ({int(current/total*100)}%)")
         else:
             # 如果总数为0，显示忙碌状态
             self.progress_bar.setMaximum(0)
             self.progress_bar.setValue(0)
+            self.progress_text.setText("正在准备...")
     
     def _process_complete(self, success, message):
         """处理完成回调"""
@@ -494,32 +650,304 @@ class MainWindow(QMainWindow):
         
         if success:
             self.progress_bar.setValue(self.progress_bar.maximum())
-            self.statusBar().showMessage("处理完成")
-            self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {message}")
+            self.progress_text.setText("处理完成")
+            self._update_log(f"✅ {message}")
             
             # 弹出成功提示
-            reply = QMessageBox.information(self, "处理完成", f"{message}\n\n是否需要打开输出目录查看导出的视频？", 
-                                   QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
+            dialog = MessageBox(
+                "处理完成", 
+                f"{message}\n\n是否需要打开输出目录查看导出的视频？",
+                self.parent_window
+            )
+            if dialog.exec():
                 self._open_output_dir()
+                
+            # 显示通知
+            InfoBar.success(
+                title="处理完成",
+                content="所有视频处理完成！",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP,
+                duration=3000
+            )
         else:
-            self.statusBar().showMessage("处理中断")
-            self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {message}")
+            self.progress_bar.setMaximum(100)
+            self.progress_bar.setValue(0)
+            self.progress_text.setText("处理已中断")
+            self._update_log(f"❌ {message}")
+            
+            # 显示通知
+            InfoBar.error(
+                title="处理中断",
+                content=message,
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP,
+                duration=5000
+            )
+
+# 设置界面
+class SettingsInterface(QDialog):
+    """设置对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        
+        # 设置窗口属性
+        self.setWindowTitle("设置")
+        self.setWindowIcon(QIcon(ICON_PATH) if os.path.exists(ICON_PATH) else FIF.SETTING.icon())
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(300)
+        
+        # 创建布局
+        self.main_layout = QVBoxLayout(self)
+        
+        # 添加设置项
+        self._add_settings(self.main_layout)
+        
+        # 添加按钮区域
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        
+        self.cancel_button = PushButton("取消")
+        self.cancel_button.clicked.connect(self.reject)
+        
+        self.ok_button = PrimaryPushButton("确定")
+        self.ok_button.clicked.connect(self.accept)
+        
+        button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.ok_button)
+        
+        self.main_layout.addLayout(button_layout)
+        
+    def _add_settings(self, layout):
+        """添加设置项"""
+        # 创建设置容器
+        settings_widget = QWidget()
+        settings_layout = QVBoxLayout(settings_widget)
+        
+        # 创建外观设置
+        appearance_card = CardWidget(settings_widget)
+        appearance_layout = QVBoxLayout(appearance_card)
+        
+        # 标题
+        appearance_title = SubtitleLabel("外观设置")
+        appearance_layout.addWidget(appearance_title)
+        
+        # 主题选择
+        theme_layout = QHBoxLayout()
+        theme_label = StrongBodyLabel("应用主题:")
+        theme_label.setFixedWidth(120)
+        self.theme_combo = ComboBox(self)
+        self.theme_combo.addItems(["浅色", "深色", "跟随系统"])
+        self.theme_combo.setCurrentIndex(int(self.parent_window.settings.value("theme", 2)))
+        theme_layout.addWidget(theme_label)
+        theme_layout.addWidget(self.theme_combo)
+        appearance_layout.addLayout(theme_layout)
+        
+        # 日志字体大小
+        log_font_layout = QHBoxLayout()
+        log_font_label = StrongBodyLabel("日志字体大小:")
+        log_font_label.setFixedWidth(120)
+        self.log_font_spinbox = SpinBox()
+        self.log_font_spinbox.setRange(8, 16)
+        self.log_font_spinbox.setValue(int(self.parent_window.settings.value("log_font_size", 9)))
+        log_font_layout.addWidget(log_font_label)
+        log_font_layout.addWidget(self.log_font_spinbox)
+        appearance_layout.addLayout(log_font_layout)
+        
+        settings_layout.addWidget(appearance_card)
+        
+        # 关于卡片
+        about_card = CardWidget(settings_widget)
+        about_layout = QVBoxLayout(about_card)
+        
+        about_title = SubtitleLabel("关于")
+        about_layout.addWidget(about_title)
+        
+        about_text = BodyLabel(f"连杀片段导出工具 v{VERSION}\n\n"
+                              f"数据目录: {APP_DIR}")
+        about_text.setWordWrap(True)
+        about_layout.addWidget(about_text)
+        
+        settings_layout.addWidget(about_card)
+        
+        # 添加设置容器到对话框布局
+        layout.addWidget(settings_widget)
+    
+    def exec(self):
+        """显示对话框并应用设置"""
+        result = super().exec()
+        if result:
+            self._apply_settings()
+        return result
+    
+    # 为了向后兼容保留exec_方法
+    def exec_(self):
+        """向后兼容的方法，调用exec"""
+        return self.exec()
+    
+    def _apply_settings(self):
+        """应用设置"""
+        # 主题设置
+        theme_index = self.theme_combo.currentIndex()
+        self.parent_window.settings.setValue("theme", theme_index)
+        
+        # 使用字典映射主题
+        theme_map = {
+            0: Theme.LIGHT,
+            1: Theme.DARK,
+            2: Theme.AUTO
+        }
+        current_theme = theme_map.get(theme_index, Theme.AUTO)  # 使用get避免索引错误
+        setTheme(current_theme)
+        
+        # 日志字体大小
+        log_font_size = self.log_font_spinbox.value()
+        self.parent_window.settings.setValue("log_font_size", log_font_size)
+        
+        # 更新日志字体大小 - 安全地访问属性
+        if hasattr(self.parent_window, 'log_text') and self.parent_window.log_text:
+            self.parent_window.log_text.setFont(QFont("Consolas", log_font_size))
+        
+        # 更新主界面进度文字字体 - 安全地访问属性
+        if (hasattr(self.parent_window, 'main_interface') and 
+                self.parent_window.main_interface and 
+                hasattr(self.parent_window.main_interface, 'progress_text') and
+                self.parent_window.main_interface.progress_text):
+            self.parent_window.main_interface.progress_text.setFont(QFont("Consolas", log_font_size))
+        
+        # 显示应用通知
+        InfoBar.success(
+            title="设置已更新",
+            content="应用设置已成功保存",
+            parent=self.parent_window,
+            position=InfoBarPosition.TOP,
+            duration=3000
+        )
+
+# 主窗口
+class MainWindow(QWidget):
+    """主窗口"""
+    def __init__(self):
+        super().__init__()
+        
+        # 设置窗口属性
+        self.setWindowTitle(f"连杀片段导出工具 v{VERSION}")
+        self.resize(1200, 750)  # 调整默认窗口大小，更适合显示内容
+        self.setMinimumSize(1000, 600)
+        
+        # 设置应用程序图标
+        if os.path.exists(ICON_PATH):
+            self.setWindowIcon(QIcon(ICON_PATH))
+        
+        # 初始化设置
+        self.settings = QSettings(ORG_NAME, APP_NAME)
+        self._load_app_settings()
+        
+        # 创建主布局
+        self._create_main_layout()
+        
+        # 恢复窗口状态
+        self._restore_window_state()
+    
+    def _load_app_settings(self):
+        """加载应用程序设置"""
+        # 主题设置
+        theme_index = int(self.settings.value("theme", 2))  # 默认跟随系统
+        theme_map = {
+            0: Theme.LIGHT,
+            1: Theme.DARK,
+            2: Theme.AUTO
+        }
+        setTheme(theme_map[theme_index])
+    
+    def _create_main_layout(self):
+        """创建主布局"""
+        # 创建主布局
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        # 创建主界面
+        self.main_interface = MainInterface(self)
+        main_layout.addWidget(self.main_interface, 2)  # 主界面占2/3宽度
+        
+        # 创建设置页面
+        self.settings_interface = SettingsInterface(self)
+        
+        # 创建日志卡片（放在右侧）
+        self.log_card = self._create_log_widget()
+        main_layout.addWidget(self.log_card, 1)  # 日志占1/3宽度
+    
+    def _create_log_widget(self):
+        """创建日志显示部件"""
+        # 创建日志卡片
+        log_card = CardWidget(self)
+        log_layout = QVBoxLayout(log_card)
+        
+        # 标题区域
+        title_layout = QHBoxLayout()
+        
+        # 标题
+        log_title = SubtitleLabel("处理日志")
+        title_layout.addWidget(log_title)
+        
+        # 添加设置按钮
+        settings_btn = ToolButton()
+        settings_btn.setIcon(FIF.SETTING)
+        settings_btn.setToolTip("打开设置")
+        settings_btn.clicked.connect(self._show_settings)
+        title_layout.addWidget(settings_btn)
+        
+        title_layout.addStretch(1)
+        log_layout.addLayout(title_layout)
+        
+        # 日志文本框
+        self.log_text = TextEdit()
+        self.log_text.setReadOnly(True)
+        log_font_size = int(self.settings.value("log_font_size", 9))
+        self.log_text.setFont(QFont("Consolas", log_font_size))
+        self.log_text.setMinimumWidth(300)
+        self.log_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        log_layout.addWidget(self.log_text)
+        
+        # 日志卡片应该占用更多空间
+        log_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        return log_card
+    
+    def _show_settings(self):
+        """显示设置对话框"""
+        self.settings_interface.exec_()
+    
+    def _restore_window_state(self):
+        """恢复窗口状态"""
+        # 恢复窗口大小和位置
+        geometry = self.settings.value("window_geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+    
+    def _save_window_state(self):
+        """保存窗口状态"""
+        # 保存窗口大小和位置
+        self.settings.setValue("window_geometry", self.saveGeometry())
     
     def closeEvent(self, event):
         """窗口关闭事件"""
         # 检查是否有处理正在进行
-        if self.processing_thread and self.processing_thread.isRunning():
-            reply = QMessageBox.question(
-                self, '确认退出', 
+        if (hasattr(self, 'main_interface') and 
+            self.main_interface.processing_thread and 
+            self.main_interface.processing_thread.isRunning()):
+            
+            dialog = MessageBox(
+                "确认退出", 
                 "处理任务仍在进行中，确定要退出吗？",
-                QMessageBox.Yes | QMessageBox.No, 
-                QMessageBox.No
+                self
             )
             
-            if reply == QMessageBox.Yes:
+            if dialog.exec():
                 # 停止处理线程
-                self.processing_thread.stop()
+                self.main_interface.processing_thread.stop()
                 
                 # 创建一个定时器来检查线程状态，避免UI卡死
                 self.close_timer = QTimer(self)
@@ -532,19 +960,34 @@ class MainWindow(QMainWindow):
             else:
                 event.ignore()
         else:
+            # 保存窗口状态
+            self._save_window_state()
+            
             # 保存设置
-            self._save_settings()
+            if hasattr(self, 'main_interface'):
+                self.main_interface.save_settings()
             event.accept()
     
     def _check_close_status(self):
         """检查线程是否已经停止，以便完成窗口关闭"""
-        if not self.processing_thread.isRunning():
+        if not self.main_interface.processing_thread.isRunning():
             self.close_timer.stop()
+            
+            # 保存窗口状态
+            self._save_window_state()
+            
             # 保存设置
-            self._save_settings()
-            # 使用默认的close事件处理
-            QMainWindow.closeEvent(self, self.pending_close_event)
+            self.main_interface.save_settings()
+            
+            # 接受关闭事件
             self.pending_close_event.accept()
+            
+    def update_log(self, message):
+        """更新日志输出"""
+        self.log_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+        # 滚动到底部
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
 
 if __name__ == "__main__":
@@ -558,15 +1001,17 @@ if __name__ == "__main__":
     logger.addHandler(file_handler)
     
     logger.info(f"应用程序启动，版本: {VERSION}")
-    logger.info(f"应用数据目录: {APP_DIR}")
     
+    # 设置高DPI属性
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+    
+    # 创建应用程序
     app = QApplication(sys.argv)
     
-    # 设置应用样式
-    app.setStyle("Fusion")
-    
-    # 实例化并显示主窗口
+    # 创建主窗口
     window = MainWindow()
     window.show()
     
-    sys.exit(app.exec_())
+    # 运行应用程序
+    sys.exit(app.exec_()) 

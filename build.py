@@ -1,156 +1,158 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-战雷连杀片段导出工具打包脚本
-使用PyInstaller打包为Windows可执行程序
+构建脚本 - 用于打包连杀片段导出工具
 """
 
 import os
-import sys
+import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
-# 打包配置
+# 构建配置
 APP_NAME = "战雷连杀导出工具"
-VERSION = "1.0.2"
 MAIN_SCRIPT = "wt_killstreak_exporter.py"
-ICON_FILE = "icon.ico"  # 如果有图标文件
-INCLUDE_FILES = []  # 需要包含的额外文件
+ICON_FILE = "icon.ico"
+VERSION_FILE = "exporter/__init__.py"
 
-def run_command(cmd, cwd=None):
-    """运行命令并打印输出"""
-    print(f"Running: {' '.join(cmd)}")
-    process = subprocess.Popen(
-        cmd, 
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=cwd
+def get_version():
+    """从版本文件中获取当前版本号"""
+    version_pattern = r'__version__\s*=\s*["\']([^"\']+)["\']'
+    with open(VERSION_FILE, "r", encoding="utf-8") as f:
+        content = f.read()
+        match = re.search(version_pattern, content)
+        if match:
+            return match.group(1)
+    return "1.0.0"  # 默认版本号
+
+def update_version(version_str=None):
+    """更新版本号"""
+    current_version = get_version()
+    if not version_str:
+        # 自动增加版本号的补丁版本部分
+        parts = current_version.split('.')
+        if len(parts) >= 3:
+            parts[2] = str(int(parts[2]) + 1)
+        version_str = '.'.join(parts)
+    
+    # 更新版本文件
+    with open(VERSION_FILE, "r", encoding="utf-8") as f:
+        content = f.read()
+    
+    content = re.sub(
+        r'__version__\s*=\s*["\']([^"\']+)["\']',
+        f'__version__ = "{version_str}"',
+        content
     )
     
-    for line in process.stdout:
-        print(line.rstrip())
+    with open(VERSION_FILE, "w", encoding="utf-8") as f:
+        f.write(content)
     
-    process.wait()
-    return process.returncode
+    print(f"版本号从 {current_version} 更新到 {version_str}")
+    return version_str
 
-def clean_build_dirs():
+def clean_build_dir():
     """清理构建目录"""
     print("清理构建目录...")
     dirs_to_clean = ["build", "dist"]
-    for dir_name in dirs_to_clean:
-        if os.path.exists(dir_name):
-            print(f"  删除 {dir_name}/ 目录")
-            shutil.rmtree(dir_name)
     
-    spec_file = f"{APP_NAME}.spec"
-    if os.path.exists(spec_file):
-        print(f"  删除 {spec_file} 文件")
-        os.remove(spec_file)
+    for dir_path in dirs_to_clean:
+        if os.path.exists(dir_path):
+            shutil.rmtree(dir_path)
+            print(f"已删除: {dir_path}")
 
-def build_exe():
+def create_resource_dirs():
+    """创建资源目录"""
+    print("创建资源目录...")
+    
+    # 确保ico文件存在
+    if not os.path.exists(ICON_FILE):
+        print(f"警告: 图标文件 {ICON_FILE} 不存在！将使用默认图标。")
+
+def build_executable():
     """构建可执行文件"""
-    # 准备PyInstaller命令
+    icon_param = f"--icon={ICON_FILE}" if os.path.exists(ICON_FILE) else ""
+    version = get_version()
+    
+    print(f"开始构建 {APP_NAME} v{version}...")
+    
     cmd = [
         "pyinstaller",
-        "--clean",
-        "--name", APP_NAME,
-        "--onedir",  # 创建一个目录包含可执行文件和依赖
-        "--noconsole",  # 无控制台窗口
-        "--windowed",  # 无控制台窗口
         "--noconfirm",
+        "--clean",
+        "--onedir",
+        "--windowed",
+        f"--name={APP_NAME}",
+        icon_param,
+        "--add-data", "icon.png;.",
+        "--exclude-module", "matplotlib",
+        "--hidden-import", "PyQt5.QtPrintSupport",
+        MAIN_SCRIPT
     ]
     
-    # 添加图标
-    if os.path.exists(ICON_FILE):
-        cmd.extend(["--icon", ICON_FILE])
+    # 过滤掉空字符串
+    cmd = [c for c in cmd if c]
     
-    # 添加主脚本
-    cmd.append(MAIN_SCRIPT)
+    print(f"运行命令: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
     
-    # 运行PyInstaller
-    return run_command(cmd)
+    # 复制其他需要的文件
+    copy_additional_files()
+    
+    print(f"构建完成! 可执行文件位于 dist/{APP_NAME}/ 目录下")
+    return True
 
 def copy_additional_files():
-    """复制额外需要的文件到dist目录"""
-    dist_dir = Path("dist") / APP_NAME
+    """复制额外需要的文件到打包目录"""
+    dst_dir = f"dist/{APP_NAME}"
+    os.makedirs(dst_dir, exist_ok=True)
     
-    # 确保目标目录存在
-    if not dist_dir.exists():
-        print(f"错误: 目标目录不存在: {dist_dir}")
-        return False
-    
-    # 复制README
-    if os.path.exists("README.md"):
-        print("复制 README.md 到dist目录")
-        shutil.copy2("README.md", dist_dir / "README.md")
-    
-    # 复制许可证
-    if os.path.exists("LICENSE"):
-        print("复制 LICENSE 到dist目录")
-        shutil.copy2("LICENSE", dist_dir / "LICENSE")
-    
-    # 复制其他文件
-    for file_path in INCLUDE_FILES:
-        if os.path.exists(file_path):
-            target_path = dist_dir / os.path.basename(file_path)
-            print(f"复制 {file_path} 到 {target_path}")
-            shutil.copy2(file_path, target_path)
-    
-    return True
-
-def create_zip_archive():
-    """创建ZIP归档文件"""
-    dist_dir = Path("dist")
-    app_dir = dist_dir / APP_NAME
-    zip_file = dist_dir / f"{APP_NAME}_v{VERSION}.zip"
-    
-    print(f"正在创建ZIP归档: {zip_file}")
-    shutil.make_archive(
-        zip_file.with_suffix(""),  # 不带扩展名的路径
-        "zip",
-        dist_dir,
-        APP_NAME
-    )
-    print(f"ZIP归档创建完成: {zip_file}")
-    
-    return True
+    # 复制README和LICENSE文件
+    for file in ["README.md", "LICENSE"]:
+        if os.path.exists(file):
+            shutil.copy2(file, os.path.join(dst_dir, file))
+            print(f"已复制 {file} 到输出目录")
 
 def main():
-    """主打包流程"""
-    print(f"===== 开始打包 {APP_NAME} v{VERSION} =====")
+    """主函数"""
+    print("=" * 60)
+    print(f"构建工具 - {APP_NAME}")
+    print("=" * 60)
     
-    # 检查依赖
+    # 命令行参数
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--clean":
+            clean_build_dir()
+            return
+        elif sys.argv[1] == "--version":
+            ver = get_version()
+            print(f"当前版本: {ver}")
+            return
+        elif sys.argv[1] == "--update-version":
+            if len(sys.argv) > 2:
+                ver = update_version(sys.argv[2])
+            else:
+                ver = update_version()
+            print(f"已更新版本到: {ver}")
+            return
+    
     try:
-        import PyInstaller
-        print(f"PyInstaller版本: {PyInstaller.__version__}")
-    except ImportError:
-        print("错误: 未安装PyInstaller. 请先运行: pip install pyinstaller")
+        # 清理旧的构建目录
+        clean_build_dir()
+        
+        # 创建资源目录
+        create_resource_dirs()
+        
+        # 构建可执行文件
+        if build_executable():
+            print(f"\n构建成功! {APP_NAME} 已准备就绪。")
+        else:
+            print("\n构建过程中出现错误。")
+    except Exception as e:
+        print(f"构建过程中发生错误: {str(e)}")
         return 1
-    
-    # 清理旧的构建文件
-    clean_build_dirs()
-    
-    # 构建.exe
-    print("\n===== 正在构建可执行文件 =====")
-    if build_exe() != 0:
-        print("错误: PyInstaller构建失败!")
-        return 1
-    
-    # 复制额外文件
-    print("\n===== 正在复制额外文件 =====")
-    if not copy_additional_files():
-        print("警告: 复制额外文件失败")
-    
-    # 创建ZIP归档
-    print("\n===== 正在创建发布包 =====")
-    if not create_zip_archive():
-        print("警告: 创建ZIP归档失败")
-    
-    print(f"\n===== 打包完成! =====")
-    print(f"可执行文件位于: dist/{APP_NAME}/{APP_NAME}.exe")
-    print(f"发布ZIP包: dist/{APP_NAME}_v{VERSION}.zip")
     
     return 0
 

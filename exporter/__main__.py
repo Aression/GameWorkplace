@@ -16,10 +16,10 @@ from exporter.utils.constants import TYPICAL_VIDEO_LENGTH, TYPICAL_KILL_POSITION
 
 def parse_args():
     """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='战雷连杀片段导出工具')
+    parser = argparse.ArgumentParser(description='连杀片段导出工具')
     
     parser.add_argument('-i', '--input-dir', required=True,
-                        help='输入目录，包含战雷录像文件')
+                        help='输入目录，包含录像文件')
     
     parser.add_argument('-o', '--output-dir', required=True,
                         help='输出目录，保存处理后的视频片段')
