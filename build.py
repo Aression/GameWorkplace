@@ -78,6 +78,40 @@ def build_executable():
     
     print(f"开始构建 {APP_NAME} v{version}...")
     
+    # 不需要的模块列表 - 优化打包大小
+    exclude_modules = [
+        "matplotlib",
+        "notebook", 
+        "scipy", 
+        "pandas",
+        "tensorboard",
+        "tensorflow",
+        "torch",
+        "cv2",
+        "scikit-learn",
+        "sphinx",
+        "pytest",
+        "IPython",
+        "numpy.distutils",
+        "numpy.testing",
+        "docutils",
+        "cython",
+        "lib2to3",
+        "tkinter",
+        "pydoc",
+        "unittest",
+        "xml.dom",
+        "email.mime"
+    ]
+    
+    # 需要显式包含的隐藏导入
+    hidden_imports = [
+        "PyQt5.QtPrintSupport",
+        "PyQt5.QtWidgets",
+        "PyQt5.QtCore",
+        "PyQt5.QtGui"
+    ]
+    
     cmd = [
         "pyinstaller",
         "--noconfirm",
@@ -86,11 +120,24 @@ def build_executable():
         "--windowed",
         f"--name={APP_NAME}",
         icon_param,
-        "--add-data", "icon.png;.",
-        "--exclude-module", "matplotlib",
-        "--hidden-import", "PyQt5.QtPrintSupport",
-        MAIN_SCRIPT
     ]
+    
+    # 添加icon.png如果存在
+    if os.path.exists("icon.png"):
+        cmd.extend(["--add-data", "icon.png;."])
+    else:
+        print("警告: icon.png文件不存在，将不会被包含在打包中。")
+    
+    # 添加需要排除的模块
+    for module in exclude_modules:
+        cmd.extend(["--exclude-module", module])
+    
+    # 添加隐藏导入
+    for module in hidden_imports:
+        cmd.extend(["--hidden-import", module])
+    
+    # 添加主脚本
+    cmd.append(MAIN_SCRIPT)
     
     # 过滤掉空字符串
     cmd = [c for c in cmd if c]

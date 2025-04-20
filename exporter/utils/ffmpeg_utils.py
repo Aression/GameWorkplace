@@ -14,7 +14,8 @@ from exporter.utils.constants import (
     GPU_ENCODE_PRESET, CPU_ENCODE_PRESET, VIDEO_BITRATE, MAX_BITRATE,
     BUFFER_SIZE, AUDIO_BITRATE, CRF_VALUE, CQ_VALUE,
     REMOVE_DUPLICATE_FRAMES, DUPLICATE_THRESHOLD_HI, DUPLICATE_THRESHOLD_LO, DUPLICATE_FRACTION,
-    FREEZE_DETECT_NOISE, FREEZE_DETECT_DURATION, SCENE_CHANGE_THRESHOLD
+    FREEZE_DETECT_NOISE, FREEZE_DETECT_DURATION, SCENE_CHANGE_THRESHOLD, ENFORCE_CPU_ENCODE,
+    DEBUG_GPU_ENCODER
 )
 
 def get_startupinfo():
@@ -47,6 +48,11 @@ def cut_video(input_path, output_path, start_time, duration):
         print(f"剪辑时间无效 (<=0): {duration} for {input_path}. 跳过剪辑。")
         return False
     try:
+        # 检查是否强制使用CPU编码
+        if ENFORCE_CPU_ENCODE:
+            print(f"  配置了强制使用CPU编码")
+            raise ValueError("强制使用CPU编码")
+            
         # 检查可用的编码器
         available_encoders = check_encoder_availability()
         
@@ -246,14 +252,34 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
             available_encoders = check_encoder_availability()
             encode_type = "CPU"  # 默认使用CPU
             
-            # 构建命令
-            if "h264_nvenc" in available_encoders:
-                # 使用 NVIDIA H.264 编码
-                print(f"使用NVIDIA H.264硬件加速编码...")
-                cmd = [
-                    'ffmpeg',
-                    '-i', intermediate_file,
-                ] + filter_complex + [
+            # 设置命令基础部分
+            cmd_base = [
+                'ffmpeg',
+                '-i', intermediate_file,
+            ] + filter_complex
+            
+            # 检查是否强制使用CPU编码
+            if ENFORCE_CPU_ENCODE:
+                print("配置了强制使用CPU编码")
+                encode_type = "CPU"
+            # 如果没有强制使用CPU，则根据可用性选择编码器
+            elif "h264_nvenc" in available_encoders:
+                # 使用GPU H.264编码
+                print("使用NVIDIA H.264硬件加速最终编码...")
+                encode_type = "NVENC_H264"
+            elif "hevc_nvenc" in available_encoders:
+                # 使用GPU HEVC编码
+                print("使用NVIDIA HEVC硬件加速最终编码...")
+                encode_type = "NVENC_HEVC"
+            else:
+                # 使用CPU
+                print("未检测到支持的硬件编码器，使用CPU编码...")
+                encode_type = "CPU"
+            
+            # 根据选择的编码器添加相应的命令行参数
+            if encode_type == "NVENC_H264":
+                # NVIDIA H.264
+                cmd = cmd_base + [
                     '-c:v', 'h264_nvenc',
                     '-preset', GPU_ENCODE_PRESET,
                     '-rc', 'vbr',
@@ -267,14 +293,9 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
                     '-y',
                     output_path
                 ]
-                encode_type = "NVIDIA H.264"
-            elif "hevc_nvenc" in available_encoders:
-                # 使用 NVIDIA HEVC 编码
-                print(f"使用NVIDIA HEVC硬件加速编码...")
-                cmd = [
-                    'ffmpeg',
-                    '-i', intermediate_file,
-                ] + filter_complex + [
+            elif encode_type == "NVENC_HEVC":
+                # NVIDIA HEVC
+                cmd = cmd_base + [
                     '-c:v', 'hevc_nvenc',
                     '-preset', GPU_ENCODE_PRESET,
                     '-rc', 'vbr',
@@ -288,14 +309,9 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
                     '-y',
                     output_path
                 ]
-                encode_type = "NVIDIA HEVC"
             else:
-                # 使用CPU编码
-                print(f"未检测到支持的硬件编码器，使用CPU编码...")
-                cmd = [
-                    'ffmpeg',
-                    '-i', intermediate_file,
-                ] + filter_complex + [
+                # CPU编码
+                cmd = cmd_base + [
                     '-c:v', 'libx264',
                     '-preset', CPU_ENCODE_PRESET,
                     '-crf', CRF_VALUE,
@@ -304,34 +320,24 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
                     '-bufsize', BUFFER_SIZE,
                     '-c:a', 'aac',
                     '-b:a', AUDIO_BITRATE,
-                    '-vsync', 'vfr',
+                    '-vsync', 'vfr',  # 可变帧率同步
                     '-y',
                     output_path
                 ]
-                encode_type = "CPU"
-                
-            print(f"使用{encode_type}进行去重编码: {' '.join(cmd)}")
+            
+            print(f"执行去重+重编码命令: {' '.join(cmd)}")
             try:
                 subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8',
-                              startupinfo=get_startupinfo())
-                print(f"{encode_type}去重编码成功: {output_path}")
-                # 清理临时文件
-                cleanup_temp_files(temp_dir, [
-                    intermediate_file, list_file,
-                    f"{temp_dir}/scenes.txt", f"{temp_dir}/freeze.txt"
-                ])
+                            startupinfo=get_startupinfo())
+                print(f"视频处理成功: {output_path}")
                 return True
             except subprocess.CalledProcessError as e:
-                print(f"{encode_type}去重编码失败: {e}")
-                
-                # 如果使用的是GPU，尝试回退到CPU
+                print(f"视频处理失败，尝试回退到CPU编码: {e}")
+                # 如果使用GPU编码失败，回退到CPU编码
                 if encode_type != "CPU":
-                    print(f"尝试使用CPU编码作为备选...")
                     try:
-                        cpu_cmd = [
-                            'ffmpeg',
-                            '-i', intermediate_file,
-                        ] + filter_complex + [
+                        # CPU编码回退
+                        cpu_cmd = cmd_base + [
                             '-c:v', 'libx264',
                             '-preset', CPU_ENCODE_PRESET,
                             '-crf', CRF_VALUE,
@@ -340,91 +346,80 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
                             '-bufsize', BUFFER_SIZE,
                             '-c:a', 'aac',
                             '-b:a', AUDIO_BITRATE,
-                            '-vsync', 'vfr',
+                            '-vsync', 'vfr',  # 可变帧率同步
                             '-y',
                             output_path
                         ]
-                        print(f"尝试使用CPU进行去重编码: {' '.join(cpu_cmd)}")
+                        
+                        print(f"使用CPU编码重试: {' '.join(cpu_cmd)}")
                         subprocess.run(cpu_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
                                       startupinfo=get_startupinfo())
-                        print(f"CPU去重编码成功: {output_path}")
-                        # 清理临时文件
-                        cleanup_temp_files(temp_dir, [
-                            intermediate_file, list_file,
-                            f"{temp_dir}/scenes.txt", f"{temp_dir}/freeze.txt"
-                        ])
+                        print(f"CPU编码成功: {output_path}")
                         return True
                     except subprocess.CalledProcessError as e_cpu:
-                        print(f"CPU去重编码也失败了: {e_cpu}")
-        
-        # 如果没有启用去重或去重失败，使用简单的重编码方法
+                        print(f"CPU编码也失败了: {e_cpu}")
+                        
+                        # 最后尝试简单复制
+                        try:
+                            copy_cmd = [
+                                'ffmpeg',
+                                '-i', intermediate_file,
+                                '-c', 'copy',
+                                '-y',
+                                output_path
+                            ]
+                            
+                            print(f"尝试直接复制流: {' '.join(copy_cmd)}")
+                            subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                                        startupinfo=get_startupinfo())
+                            print(f"流复制成功: {output_path}")
+                            return True
+                        except subprocess.CalledProcessError as e_copy:
+                            print(f"所有尝试都失败了: {e_copy}")
+                            return False
+                else:
+                    # 最后尝试简单复制
+                    try:
+                        copy_cmd = [
+                            'ffmpeg',
+                            '-i', intermediate_file,
+                            '-c', 'copy',
+                            '-y',
+                            output_path
+                        ]
+                        
+                        print(f"尝试直接复制流: {' '.join(copy_cmd)}")
+                        subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                                    startupinfo=get_startupinfo())
+                        print(f"流复制成功: {output_path}")
+                        return True
+                    except subprocess.CalledProcessError as e_copy:
+                        print(f"所有尝试都失败了: {e_copy}")
+                        return False
+        else:
+            # 如果不去重帧，直接复制中间文件
+            print(f"不进行去重，直接复制中间文件到目标位置")
+            try:
+                import shutil
+                shutil.copy2(intermediate_file, output_path)
+                print(f"文件复制成功: {output_path}")
+                return True
+            except Exception as e_copy:
+                print(f"复制文件失败: {e_copy}")
+                return False
+                
+    finally:
+        # 清理临时文件
         try:
-            print("尝试使用简单重编码...")
-            
-            # 检查可用编码器
-            if not 'available_encoders' in locals():
-                available_encoders = check_encoder_availability()
-                
-            # 选择编码器
-            if "h264_nvenc" in available_encoders:
-                print(f"使用NVIDIA H.264硬件加速编码...")
-                simple_cmd = [
-                    'ffmpeg',
-                    '-i', intermediate_file if os.path.exists(intermediate_file) else list_file,
-                    '-c:v', 'h264_nvenc',
-                    '-preset', GPU_ENCODE_PRESET,
-                    '-b:v', VIDEO_BITRATE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-y',
-                    output_path
-                ]
-            elif "hevc_nvenc" in available_encoders:
-                print(f"使用NVIDIA HEVC硬件加速编码...")
-                simple_cmd = [
-                    'ffmpeg',
-                    '-i', intermediate_file if os.path.exists(intermediate_file) else list_file,
-                    '-c:v', 'hevc_nvenc',
-                    '-preset', GPU_ENCODE_PRESET,
-                    '-b:v', VIDEO_BITRATE, 
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-y',
-                    output_path
-                ]
-            else:
-                print(f"使用CPU编码...")
-                simple_cmd = [
-                    'ffmpeg',
-                    '-i', intermediate_file if os.path.exists(intermediate_file) else list_file,
-                    '-c:v', 'libx264',
-                    '-preset', CPU_ENCODE_PRESET,
-                    '-crf', CRF_VALUE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-y',
-                    output_path
-                ]
-                
-            print(f"简单重编码命令: {' '.join(simple_cmd)}")
-            subprocess.run(simple_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
-                          startupinfo=get_startupinfo())
-            print(f"简单重编码成功: {output_path}")
-            return True
-        except Exception as e:
-            print(f"所有编码方法都失败了: {e}")
-            return False
-        finally:
-            # 清理临时文件
             cleanup_temp_files(temp_dir, [
                 intermediate_file, list_file,
                 f"{temp_dir}/scenes.txt", f"{temp_dir}/freeze.txt"
             ])
             
-    except Exception as e:
-        print(f"合并视频时发生错误: {e}")
-        cleanup_temp_files(temp_dir, [list_file, intermediate_file] if intermediate_file else [list_file])
-        return False
+        except Exception as e:
+            print(f"合并视频时发生错误: {e}")
+            cleanup_temp_files(temp_dir, [list_file, intermediate_file] if intermediate_file else [list_file])
+            return False
 
 def cleanup_temp_files(temp_dir, file_list):
     """清理临时文件
@@ -448,16 +443,46 @@ def check_encoder_availability():
     Returns:
         List[str]: 可用编码器列表
     """
+    from exporter.utils.constants import ENFORCE_CPU_ENCODE, DEBUG_GPU_ENCODER
+    
+    # 如果强制使用CPU编码，直接返回空列表
+    if ENFORCE_CPU_ENCODE:
+        print("配置了强制使用CPU编码，跳过GPU编码器检测")
+        return []
+    
     available_encoders = []
     
     try:
         # 运行FFmpeg命令以获取所有可用编码器
         cmd = ["ffmpeg", "-hide_banner", "-encoders"]
+        print(f"执行命令检查编码器: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8',
                               startupinfo=get_startupinfo())
         
         # 检查输出中的各种编码器
         output = result.stdout
+        error_output = result.stderr
+        
+        # 为调试目的打印完整输出
+        print(f"FFmpeg编码器检测状态码: {result.returncode}")
+        if error_output:
+            print(f"FFmpeg编码器检测错误输出: {error_output}")
+        
+        # 调试模式下输出更多信息
+        if DEBUG_GPU_ENCODER:
+            print("==== 开始GPU编码器诊断 ====")
+            # 检查CUDA环境变量
+            cuda_path = os.environ.get("CUDA_PATH", "未设置")
+            print(f"CUDA_PATH环境变量: {cuda_path}")
+            
+            # 检查PATH中是否包含CUDA路径
+            path_has_cuda = "CUDA" in os.environ.get("PATH", "")
+            print(f"PATH中是否包含CUDA: {path_has_cuda}")
+            
+            # 输出所有编码器列表帮助诊断
+            print("系统支持的所有编码器列表:")
+            print(output)
+            print("==== 结束GPU编码器诊断 ====")
         
         # 检查常用的GPU编码器
         encoders_to_check = [
@@ -474,10 +499,15 @@ def check_encoder_availability():
         for encoder in encoders_to_check:
             if encoder in output:
                 available_encoders.append(encoder)
+                print(f"找到可用编码器: {encoder}")
+            else:
+                print(f"未找到编码器: {encoder}")
         
         print(f"检测到的可用硬件编码器: {', '.join(available_encoders) if available_encoders else '无'}")
         
     except Exception as e:
         print(f"检查编码器时出错: {e}")
+        import traceback
+        traceback.print_exc()
     
     return available_encoders 

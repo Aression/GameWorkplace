@@ -93,6 +93,7 @@ class ProcessingThread(QThread):
     update_signal = pyqtSignal(str)  # 进度更新信号
     progress_signal = pyqtSignal(int, int)  # 进度条更新信号(当前值, 最大值)
     complete_signal = pyqtSignal(bool, str)  # 完成信号(是否成功, 消息)
+    scanning_signal = pyqtSignal(bool)  # 扫描状态信号(True表示正在扫描，False表示处理中)
     
     def __init__(self, input_dir, output_dir, lead_time, tail_time, threshold, min_kills):
         super().__init__()
@@ -103,6 +104,7 @@ class ProcessingThread(QThread):
         self.threshold = threshold
         self.min_kills = min_kills
         self.is_running = True
+        self.is_scanning = False
         
     def run(self):
         """运行处理线程"""
@@ -146,7 +148,21 @@ class ProcessingThread(QThread):
     
     def _progress_callback(self, current, total, message=""):
         """处理进度回调"""
+        # 检测是否正在扫描阶段
+        if message and ("扫描" in message or "寻找" in message):
+            if not self.is_scanning:
+                self.is_scanning = True
+                self.scanning_signal.emit(True)
+        elif current > 0 and total > 0:
+            # 当开始处理视频并且有具体进度时，表示不再是扫描阶段
+            if self.is_scanning:
+                self.is_scanning = False
+                self.scanning_signal.emit(False)
+        
+        # 发送进度信号
         self.progress_signal.emit(current, total)
+        
+        # 如果有消息则发送更新信号
         if message:
             self.update_signal.emit(message)
     
@@ -566,7 +582,8 @@ class MainInterface(ScrollArea):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.progress_bar.setValue(0)
-        self.progress_text.setText("正在处理中...")
+        self.progress_text.setText("正在准备...")
+        self.is_scanning = False  # 初始化扫描状态为False
         
         # 更新日志
         self._update_log("开始处理视频...")
@@ -583,6 +600,7 @@ class MainInterface(ScrollArea):
         self.processing_thread.update_signal.connect(self._update_log)
         self.processing_thread.progress_signal.connect(self._update_progress)
         self.processing_thread.complete_signal.connect(self._process_complete)
+        self.processing_thread.scanning_signal.connect(self._update_scanning_state)
         self.processing_thread.start()
         
         # 显示通知
@@ -616,6 +634,7 @@ class MainInterface(ScrollArea):
                 def check_thread_status():
                     if not self.processing_thread.isRunning():
                         # 线程已停止，恢复UI状态
+                        self.is_scanning = False  # 重置扫描状态
                         self._process_complete(False, "处理已取消")
                         timer.stop()
                 
@@ -632,12 +651,18 @@ class MainInterface(ScrollArea):
     
     def _update_progress(self, current, total):
         """更新进度条"""
-        if total > 0:
+        if self.is_scanning:
+            # 处于扫描状态，显示忙碌状态
+            self.progress_bar.setMaximum(0)
+            self.progress_bar.setValue(0)
+            self.progress_text.setText("正在扫描视频文件...")
+        elif total > 0:
+            # 处理视频状态，显示具体进度
             self.progress_bar.setMaximum(total)
             self.progress_bar.setValue(current)
             self.progress_text.setText(f"进度: {current}/{total} ({int(current/total*100)}%)")
         else:
-            # 如果总数为0，显示忙碌状态
+            # 未知状态，显示忙碌状态
             self.progress_bar.setMaximum(0)
             self.progress_bar.setValue(0)
             self.progress_text.setText("正在准备...")
@@ -647,9 +672,11 @@ class MainInterface(ScrollArea):
         # 恢复UI状态
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.is_scanning = False  # 重置扫描状态
         
         if success:
-            self.progress_bar.setValue(self.progress_bar.maximum())
+            self.progress_bar.setMaximum(100)  # 确保进度条有最大值
+            self.progress_bar.setValue(100)    # 设置为100%
             self.progress_text.setText("处理完成")
             self._update_log(f"✅ {message}")
             
@@ -684,6 +711,11 @@ class MainInterface(ScrollArea):
                 position=InfoBarPosition.TOP,
                 duration=5000
             )
+    
+    def _update_scanning_state(self, is_scanning):
+        """更新扫描状态"""
+        self.is_scanning = is_scanning
+        self._update_progress(0, 0)
 
 # 设置界面
 class SettingsInterface(QDialog):
