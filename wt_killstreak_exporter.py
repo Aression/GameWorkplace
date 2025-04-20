@@ -97,7 +97,7 @@ class ProcessingThread(QThread):
             # 通知UI开始处理
             self.update_signal.emit("开始处理视频...")
             
-            # 获取应用程序状态文件路径和临时目录
+            # 获取应用程序状态文件路径
             state_file = os.path.join(APP_DIR, "processing_state.json")
             
             # 执行视频处理
@@ -110,7 +110,7 @@ class ProcessingThread(QThread):
                 min_kills=self.min_kills,
                 progress_callback=self._progress_callback,
                 state_file=state_file,
-                temp_dir=APP_DIR,
+                temp_dir=None,  # 使用默认的输出目录/temp
                 is_running=lambda: self.is_running  # 传递检查函数
             )
             

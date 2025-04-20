@@ -55,15 +55,15 @@ def main():
     # 确保输出目录存在
     os.makedirs(output_dir, exist_ok=True)
     
-    # 临时目录配置
-    temp_dir = args.temp_dir or tempfile.gettempdir()
+    # 临时目录配置 - 如果未指定则使用输出目录下的temp子目录
+    temp_dir = args.temp_dir
     
     print("开始视频处理任务...")
     print(f"输入目录: {input_dir}")
     print(f"输出目录: {output_dir}")
     print(f"连杀参数: Lead={args.lead}s, Tail={args.tail}s, Threshold={args.threshold}s, Min Kills={args.min_kills}")
     print(f"状态文件: {args.state_file or '默认'}")
-    print(f"临时目录: {temp_dir}")
+    print(f"临时目录: {temp_dir or '使用输出目录下的temp目录'}")
     
     # 执行处理
     try:

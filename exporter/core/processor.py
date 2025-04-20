@@ -36,8 +36,17 @@ def process_videos(input_dir, output_dir, lead=10, tail=2, threshold=30, min_kil
     Returns:
         int: 成功导出的视频数量
     """
+    # 创建输出目录中的临时文件夹
+    cache_dir = os.path.join(output_dir, "temp")
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # 如果未指定temp_dir，则使用输出目录下的temp子目录
+    if not temp_dir:
+        temp_dir = cache_dir
+    
     last_processed_time = load_last_processed_time(state_file)
     print(f"上次处理到时间: {last_processed_time}" if last_processed_time else "首次处理或未找到记录，将处理所有视频。")
+    print(f"临时文件将保存在: {temp_dir}")
 
     all_files_info = []
     skipped_count = 0
