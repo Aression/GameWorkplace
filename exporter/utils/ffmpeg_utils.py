@@ -9,6 +9,7 @@ import time
 import subprocess
 import platform
 from datetime import datetime
+import json
 
 from exporter.utils.constants import (
     GPU_ENCODE_PRESET, CPU_ENCODE_PRESET, VIDEO_BITRATE, MAX_BITRATE,
@@ -511,3 +512,99 @@ def check_encoder_availability():
         traceback.print_exc()
     
     return available_encoders 
+
+def get_video_info(video_path):
+    """使用 ffprobe 获取视频信息，包括分辨率、码率、时长等
+    
+    Args:
+        video_path: 视频文件路径
+        
+    Returns:
+        dict: 包含视频信息的字典，如果出错返回None
+            - width: 宽度
+            - height: 高度
+            - duration: 时长(秒)
+            - bitrate: 视频码率(bps)
+            - framerate: 帧率
+    """
+    try:
+        cmd = [
+            'ffprobe', 
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height,bit_rate,avg_frame_rate,duration',
+            '-show_entries', 'format=bit_rate,duration',
+            '-of', 'json',
+            video_path
+        ]
+        
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, 
+                               startupinfo=get_startupinfo())
+        
+        data = json.loads(result.stdout)
+        
+        # 初始化返回结果
+        info = {
+            'width': None,
+            'height': None, 
+            'duration': None,
+            'bitrate': None,
+            'framerate': None
+        }
+        
+        # 从视频流获取信息
+        if 'streams' in data and len(data['streams']) > 0:
+            stream = data['streams'][0]
+            info['width'] = stream.get('width')
+            info['height'] = stream.get('height')
+            
+            # 获取帧率 (通常格式为 "24000/1001" 表示 23.976fps)
+            if 'avg_frame_rate' in stream:
+                try:
+                    framerate = stream['avg_frame_rate']
+                    if '/' in framerate:
+                        num, den = map(int, framerate.split('/'))
+                        if den != 0:  # 防止除以零
+                            info['framerate'] = round(num / den, 3)
+                except Exception:
+                    pass
+                    
+            # 尝试获取视频流码率
+            if 'bit_rate' in stream:
+                try:
+                    info['bitrate'] = int(stream['bit_rate'])
+                except (ValueError, TypeError):
+                    pass
+                    
+            # 尝试获取流时长
+            if 'duration' in stream:
+                try:
+                    info['duration'] = float(stream['duration'])
+                except (ValueError, TypeError):
+                    pass
+        
+        # 如果视频流中没有某些信息，尝试从格式信息获取
+        if 'format' in data:
+            # 如果没有从流中获取到码率，从格式信息获取
+            if not info['bitrate'] and 'bit_rate' in data['format']:
+                try:
+                    info['bitrate'] = int(data['format']['bit_rate'])
+                except (ValueError, TypeError):
+                    pass
+                    
+            # 如果没有从流中获取到时长，从格式信息获取
+            if not info['duration'] and 'duration' in data['format']:
+                try:
+                    info['duration'] = float(data['format']['duration'])
+                except (ValueError, TypeError):
+                    pass
+                
+        print(f"获取视频信息成功: 分辨率={info['width']}x{info['height']}, 码率={info['bitrate']/1000 if info['bitrate'] else 'unknown'}kbps")
+        return info
+        
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"获取视频信息失败 {video_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"获取视频信息过程中发生未知错误 {video_path}: {e}")
+        return None 

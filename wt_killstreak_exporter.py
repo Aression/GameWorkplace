@@ -560,6 +560,28 @@ class MainInterface(ScrollArea):
             )
             return False
         
+        # 检查击杀前保留和击杀后保留总时长是否超过典型视频长度
+        lead_time = self.lead_time_spinbox.value()
+        tail_time = self.tail_time_spinbox.value()
+        
+        # 从导入的常量获取典型视频长度
+        from exporter.utils.constants import TYPICAL_VIDEO_LENGTH
+        
+        total_segment_time = lead_time + tail_time
+        
+        # 如果总时间超过典型视频长度，显示警告
+        if total_segment_time > TYPICAL_VIDEO_LENGTH:
+            warning_msg = f"击杀前({lead_time}秒)和击杀后({tail_time}秒)保留时间总计{total_segment_time}秒，超过典型视频长度({TYPICAL_VIDEO_LENGTH}秒)，可能导致部分片段无法导出"
+            
+            dialog = MessageBox(
+                "参数警告", 
+                f"{warning_msg}\n\n是否仍要继续处理？",
+                self.parent_window
+            )
+            
+            if not dialog.exec():
+                return False
+        
         return True
     
     def _start_processing(self):

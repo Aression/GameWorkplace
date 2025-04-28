@@ -26,7 +26,7 @@ from exporter.utils.file_utils import (
     parse_video_time, load_last_processed_time, save_last_processed_time
 )
 from exporter.utils.ffmpeg_utils import (
-    get_video_duration, cut_video, get_startupinfo, check_encoder_availability
+    get_video_duration, cut_video, get_startupinfo, check_encoder_availability, get_video_info
 )
 from exporter.core.models import TimeSegment
 
@@ -284,7 +284,7 @@ def _process_killstreak_segments(valid_segments, videos, output_dir, temp_dir,
         # 对于只有一个区间的情况，尝试使用单视频覆盖
         if len(merged_intervals) == 1:
             result = _process_single_interval(
-                merged_intervals[0], videos, final_output_path, temp_dir, progress_callback
+                merged_intervals[0], videos, final_output_path, temp_dir, is_running
             )
             
             if result:
@@ -315,295 +315,266 @@ def _process_killstreak_segments(valid_segments, videos, output_dir, temp_dir,
         
     return successful_exports
 
-def _process_single_interval(interval, videos, output_path, temp_dir, progress_callback=None):
-    """处理单个时间区间，寻找可完全覆盖此区间的视频"""
-    # 初始化成功使用的编码器记录
-    if not hasattr(_process_single_interval, "_successful_encoder"):
-        _process_single_interval._successful_encoder = None
-
-    # 搜索能完全覆盖区间的单个视频
+def _process_single_interval(interval, videos, output_path, temp_dir, is_running=None):
+    """处理单个时间区间
+    
+    尝试找到能够完全覆盖该区间的单个视频，并剪辑出对应片段
+    
+    Args:
+        interval: 要处理的时间区间, (start_time, end_time)的元组
+        videos: 可用视频列表，每个视频是包含路径、开始时间、结束时间的字典
+        output_path: 输出文件路径
+        temp_dir: 临时文件目录
+        is_running: 运行状态检查函数
+        
+    Returns:
+        bool: 是否成功找到并处理了区间
+    """
     interval_start, interval_end = interval
     interval_duration = (interval_end - interval_start).total_seconds()
     
-    full_coverage_videos = []
+    print(f"尝试单视频处理区间: {interval_start} -> {interval_end} (时长: {interval_duration:.2f}秒)")
     
+    # 检查是否有视频可以完全覆盖该区间
     for video in videos:
+        # 检查是否应该停止处理
+        if is_running is not None and not is_running():
+            return False
+            
         video_start = video["start"]
         video_end = video["end"]
         
-        # 检查视频是否完全覆盖区间
+        # 确保时间类型一致
+        if not all(isinstance(t, datetime) for t in [video_start, video_end, interval_start, interval_end]):
+            continue
+        
+        # 如果视频完全覆盖了区间
         if video_start <= interval_start and video_end >= interval_end:
-            # 计算相对区间起点在视频中的位置和区间长度
-            rel_start = (interval_start - video_start).total_seconds()
+            print(f"  找到覆盖区间的视频: {video['filename']}")
             
-            full_coverage_videos.append({
-                "video": video,
-                "rel_start": rel_start,
-                "duration": interval_duration
-            })
-    
-    # 按照相对开始位置排序，优先使用区间靠前的视频(避免从视频尾部裁剪)
-    full_coverage_videos.sort(key=lambda x: x["rel_start"])
-    
-    # 如果有可以完全覆盖的视频，直接使用第一个
-    if full_coverage_videos:
-        cover_info = full_coverage_videos[0]
-        video = cover_info["video"]
-        rel_start = cover_info["rel_start"]
-        duration = cover_info["duration"]
-        
-        print(f"  找到完全覆盖区间的视频: {video['filename']}")
-        print(f"  区间起点相对位置: {rel_start:.2f}秒，区间长度: {duration:.2f}秒")
-        
-        # 创建FFmpeg过滤器命令
-        # 使用trim+setpts裁剪视频
-        filter_script = (
-            f"[0:v]trim=start={rel_start}:duration={duration},setpts=PTS-STARTPTS[v];\n"
-            f"[0:a]atrim=start={rel_start}:duration={duration},asetpts=PTS-STARTPTS[a]"
-        )
-        
-        # 准备ffmpeg命令参数
-        filter_script_path = os.path.join(temp_dir, "filter_script.txt")
-        with open(filter_script_path, 'w', encoding='utf-8') as f:
-            f.write(filter_script)
-        
-        try:
-            # 如果之前已经成功使用某个编码器，直接使用它
-            if _process_single_interval._successful_encoder:
-                print(f"  使用之前成功的编码器: {_process_single_interval._successful_encoder}")
+            # 计算在原视频中的相对位置
+            rel_start = (interval_start - video_start).total_seconds()
+            duration = interval_duration
+            
+            # 创建过滤器脚本
+            filter_script_path = os.path.join(temp_dir, f'filter_{os.getpid()}_{int(time.time())}.txt')
+            
+            # 获取视频信息（分辨率和码率）
+            video_info = get_video_info(video["path"])
+            if not video_info:
+                print(f"  无法获取视频信息，使用默认设置")
+                video_width = None
+                video_height = None
+                video_bitrate = None
+            else:
+                video_width = video_info.get('width')
+                video_height = video_info.get('height')
+                video_bitrate = video_info.get('bitrate')
+                print(f"  获取到视频信息: 分辨率={video_width}x{video_height}, 码率={video_bitrate/1000 if video_bitrate else 'unknown'}kbps")
+            
+            # 如果视频尺寸无效，则忽略分辨率设置
+            if not video_width or not video_height:
+                video_width = None
+                video_height = None
+                
+            # 构建FFmpeg过滤器脚本
+            filter_parts = []
+            filter_parts.append(f"[0:v]trim=start={rel_start}:duration={duration},setpts=PTS-STARTPTS[v]")
+            filter_parts.append(f"[0:a]atrim=start={rel_start}:duration={duration},asetpts=PTS-STARTPTS[a]")
+            
+            # 写入过滤器脚本
+            with open(filter_script_path, 'w', encoding='utf-8') as f:
+                f.write(";\n".join(filter_parts))
+            
+            # 如果已经有成功使用的编码器，直接使用它
+            if hasattr(_process_single_interval, '_successful_encoder'):
                 encoder_name = _process_single_interval._successful_encoder
+                print(f"  使用之前成功的编码器: {encoder_name}")
                 
                 if encoder_name == "h264_nvenc":
-                    # 使用GPU H.264编码
-                    cmd = [
-                        'ffmpeg',
-                        '-i', video["path"],
-                        '-filter_complex_script', filter_script_path,
-                        '-map', '[v]',
-                        '-map', '[a]',
-                        '-c:v', 'h264_nvenc',
-                        '-preset', GPU_ENCODE_PRESET,
-                        '-rc', 'vbr',
-                        '-cq', CQ_VALUE,
-                        '-b:v', VIDEO_BITRATE,
-                        '-maxrate', MAX_BITRATE,
-                        '-bufsize', BUFFER_SIZE,
-                        '-c:a', 'aac',
-                        '-b:a', AUDIO_BITRATE,
-                        '-vsync', 'vfr',
-                        '-y',
-                        output_path
-                    ]
+                    try:
+                        # 获取可用的编码器
+                        available_encoders = check_encoder_availability()
+                        if "h264_nvenc" not in available_encoders:
+                            raise ValueError("NVIDIA H.264编码器不可用")
+                            
+                        # 使用GPU H.264编码
+                        print("  使用NVIDIA H.264硬件加速...")
+                        cmd = [
+                            'ffmpeg',
+                            '-i', video["path"],
+                            '-filter_complex_script', filter_script_path,
+                            '-map', '[v]',
+                            '-map', '[a]'
+                        ]
+                        
+                        # 添加视频尺寸参数（如果有效）
+                        if video_width and video_height:
+                            cmd.extend(['-s', f'{video_width}x{video_height}'])
+                            
+                        # 添加编码器和参数
+                        cmd.extend([
+                            '-c:v', 'h264_nvenc',
+                            '-preset', GPU_ENCODE_PRESET,
+                            '-rc', 'vbr',
+                            '-cq', CQ_VALUE
+                        ])
+                        
+                        # 添加码率参数（如果有效）
+                        if video_bitrate:
+                            bitrate_str = f"{max(1000000, video_bitrate)}"  # 确保至少1Mbps
+                            cmd.extend([
+                                '-b:v', bitrate_str,
+                                '-maxrate', f"{int(video_bitrate * 1.4)}",  # 最大码率比平均码率高40%
+                                '-bufsize', f"{int(video_bitrate * 2)}"     # 缓冲区大小为平均码率的2倍
+                            ])
+                        else:
+                            # 使用默认码率
+                            cmd.extend([
+                                '-b:v', VIDEO_BITRATE,
+                                '-maxrate', MAX_BITRATE,
+                                '-bufsize', BUFFER_SIZE
+                            ])
+                        
+                        # 添加音频和其他参数
+                        cmd.extend([
+                            '-c:a', 'aac',
+                            '-b:a', AUDIO_BITRATE,
+                            '-vsync', 'vfr',  # 可变帧率同步
+                            '-y',
+                            output_path
+                        ])
+                        
+                        print(f"  执行GPU编码导出: {' '.join(cmd)}")
+                        process = subprocess.run(cmd, check=True, capture_output=True, 
+                                               text=True, encoding='utf-8', startupinfo=get_startupinfo())
+                        
+                        print(f"  成功导出区间视频: {output_path}")
+                        return True
+                    except Exception as e:
+                        print(f"  使用已知编码器失败，尝试其他方法: {e}")
+                        # 继续使用其他方法
+                
                 elif encoder_name == "hevc_nvenc":
-                    # 使用GPU HEVC (H.265) 编码
-                    cmd = [
-                        'ffmpeg',
-                        '-i', video["path"],
-                        '-filter_complex_script', filter_script_path,
-                        '-map', '[v]',
-                        '-map', '[a]',
-                        '-c:v', 'hevc_nvenc',
-                        '-preset', GPU_ENCODE_PRESET,
-                        '-rc', 'vbr',
-                        '-cq', CQ_VALUE,
-                        '-b:v', VIDEO_BITRATE,
-                        '-maxrate', MAX_BITRATE,
-                        '-bufsize', BUFFER_SIZE,
-                        '-c:a', 'aac',
-                        '-b:a', AUDIO_BITRATE,
-                        '-vsync', 'vfr',
-                        '-y',
-                        output_path
-                    ]
+                    try:
+                        # 同样的逻辑，但使用HEVC编码器
+                        available_encoders = check_encoder_availability()
+                        if "hevc_nvenc" not in available_encoders:
+                            raise ValueError("NVIDIA HEVC编码器不可用")
+                            
+                        print("  使用NVIDIA HEVC硬件加速...")
+                        cmd = [
+                            'ffmpeg',
+                            '-i', video["path"],
+                            '-filter_complex_script', filter_script_path,
+                            '-map', '[v]',
+                            '-map', '[a]'
+                        ]
+                        
+                        # 添加视频尺寸参数（如果有效）
+                        if video_width and video_height:
+                            cmd.extend(['-s', f'{video_width}x{video_height}'])
+                            
+                        # 添加编码器和参数
+                        cmd.extend([
+                            '-c:v', 'hevc_nvenc',
+                            '-preset', GPU_ENCODE_PRESET,
+                            '-rc', 'vbr',
+                            '-cq', CQ_VALUE
+                        ])
+                        
+                        # 添加码率参数（如果有效）
+                        if video_bitrate:
+                            bitrate_str = f"{max(1000000, video_bitrate)}"  # 确保至少1Mbps
+                            cmd.extend([
+                                '-b:v', bitrate_str,
+                                '-maxrate', f"{int(video_bitrate * 1.4)}",  # 最大码率比平均码率高40%
+                                '-bufsize', f"{int(video_bitrate * 2)}"     # 缓冲区大小为平均码率的2倍
+                            ])
+                        else:
+                            # 使用默认码率
+                            cmd.extend([
+                                '-b:v', VIDEO_BITRATE,
+                                '-maxrate', MAX_BITRATE,
+                                '-bufsize', BUFFER_SIZE
+                            ])
+                        
+                        # 添加音频和其他参数
+                        cmd.extend([
+                            '-c:a', 'aac',
+                            '-b:a', AUDIO_BITRATE,
+                            '-vsync', 'vfr',
+                            '-y',
+                            output_path
+                        ])
+                        
+                        print(f"  执行GPU编码导出: {' '.join(cmd)}")
+                        process = subprocess.run(cmd, check=True, capture_output=True, 
+                                               text=True, encoding='utf-8', startupinfo=get_startupinfo())
+                        
+                        print(f"  成功导出区间视频: {output_path}")
+                        return True
+                    except Exception as e:
+                        print(f"  使用已知编码器失败，尝试其他方法: {e}")
+                        # 继续使用其他方法
+                
                 elif encoder_name == "cpu":
-                    # 使用CPU编码
-                    cmd = [
-                        'ffmpeg',
-                        '-i', video["path"],
-                        '-filter_complex_script', filter_script_path,
-                        '-map', '[v]',
-                        '-map', '[a]',
-                        '-c:v', 'libx264',
-                        '-preset', CPU_ENCODE_PRESET,
-                        '-crf', CRF_VALUE,
-                        '-b:v', VIDEO_BITRATE,
-                        '-maxrate', MAX_BITRATE,
-                        '-bufsize', BUFFER_SIZE,
-                        '-c:a', 'aac',
-                        '-b:a', AUDIO_BITRATE,
-                        '-vsync', 'vfr',
-                        '-y',
-                        output_path
-                    ]
-                else:
-                    raise ValueError(f"未知的编码器类型: {encoder_name}")
-                    
-                print(f"  执行编码导出: {' '.join(cmd)}")
-                try:
-                    process = subprocess.run(cmd, check=True, capture_output=True, 
-                                         text=True, encoding='utf-8', startupinfo=get_startupinfo())
-                    
-                    print(f"  成功导出区间视频: {output_path}")
-                    return True
-                except subprocess.CalledProcessError as e:
-                    print(f"  命令执行失败: {e}")
-                    # 失败时不要退出，继续尝试其他编码器
-                    print(f"  使用之前的编码器失败，将尝试其他编码器")
-                except UnicodeDecodeError as e:
-                    print(f"  编码解码错误: {e}")
-                    print(f"  这可能是由于ffmpeg输出包含无法解码的字符，继续尝试其他编码器")
-                except Exception as e:
-                    print(f"  处理视频时发生意外错误: {str(e)}")
-                    print(f"  尝试使用其他编码器")
-            
-            # 检查可用的编码器
-            available_encoders = check_encoder_availability()
-            
-            # 尝试GPU编码
-            if "h264_nvenc" in available_encoders:
-                # 使用GPU H.264编码
-                print("  使用NVIDIA H.264硬件加速...")
-                cmd = [
-                    'ffmpeg',
-                    '-i', video["path"],
-                    '-filter_complex_script', filter_script_path,
-                    '-map', '[v]',
-                    '-map', '[a]',
-                    '-c:v', 'h264_nvenc',
-                    '-preset', GPU_ENCODE_PRESET,
-                    '-rc', 'vbr',
-                    '-cq', CQ_VALUE,
-                    '-b:v', VIDEO_BITRATE,
-                    '-maxrate', MAX_BITRATE,
-                    '-bufsize', BUFFER_SIZE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-vsync', 'vfr',  # 可变帧率同步，配合mpdecimate使用
-                    '-y',
-                    output_path
-                ]
-                
-                print(f"  执行GPU编码导出: {' '.join(cmd)}")
-                try:
-                    process = subprocess.run(cmd, check=True, capture_output=True, 
-                                          text=True, encoding='utf-8', startupinfo=get_startupinfo())
-                    
-                    print(f"  成功导出区间视频: {output_path}")
-                    # 记录成功的编码器
-                    _process_single_interval._successful_encoder = "h264_nvenc"
-                    return True
-                except subprocess.CalledProcessError as e:
-                    print(f"  NVIDIA H.264编码失败: {e}")
-                    # 继续尝试其他编码器
-                except UnicodeDecodeError as e:
-                    print(f"  编码解码错误: {e}")
-                    print(f"  尝试其他编码器")
-                except Exception as e:
-                    print(f"  处理视频时发生意外错误: {str(e)}")
-                    print(f"  尝试其他编码器")
-                    
-            elif "hevc_nvenc" in available_encoders:
-                # 使用GPU HEVC编码 (H.265)
-                print("  使用NVIDIA HEVC硬件加速...")
-                cmd = [
-                    'ffmpeg',
-                    '-i', video["path"],
-                    '-filter_complex_script', filter_script_path,
-                    '-map', '[v]',
-                    '-map', '[a]',
-                    '-c:v', 'hevc_nvenc',
-                    '-preset', GPU_ENCODE_PRESET,
-                    '-rc', 'vbr',
-                    '-cq', CQ_VALUE,
-                    '-b:v', VIDEO_BITRATE,
-                    '-maxrate', MAX_BITRATE,
-                    '-bufsize', BUFFER_SIZE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-vsync', 'vfr',  # 可变帧率同步
-                    '-y',
-                    output_path
-                ]
-                
-                print(f"  执行GPU编码导出: {' '.join(cmd)}")
-                try:
-                    process = subprocess.run(cmd, check=True, capture_output=True, 
-                                          text=True, encoding='utf-8', startupinfo=get_startupinfo())
-                    
-                    print(f"  成功导出区间视频: {output_path}")
-                    # 记录成功的编码器
-                    _process_single_interval._successful_encoder = "hevc_nvenc"
-                    return True
-                except subprocess.CalledProcessError as e:
-                    print(f"  NVIDIA HEVC编码失败: {e}")
-                    # 继续尝试其他编码器
-                except UnicodeDecodeError as e:
-                    print(f"  编码解码错误: {e}")
-                    print(f"  尝试其他编码器")
-                except Exception as e:
-                    print(f"  处理视频时发生意外错误: {str(e)}")
-                    print(f"  尝试其他编码器")
-                    
-            else:
-                # 直接使用CPU编码，不尝试GPU
-                raise ValueError("未检测到支持的GPU编码器，直接使用CPU编码")
-                
-        except (subprocess.CalledProcessError, ValueError, UnicodeDecodeError) as e:
-            print(f"  GPU编码失败或不可用，尝试CPU编码: {e}")
-            
-            try:
-                # 使用CPU编码
-                cmd = [
-                    'ffmpeg',
-                    '-i', video["path"],
-                    '-filter_complex_script', filter_script_path,
-                    '-map', '[v]',
-                    '-map', '[a]',
-                    '-c:v', 'libx264',
-                    '-preset', CPU_ENCODE_PRESET,
-                    '-crf', CRF_VALUE,
-                    '-b:v', VIDEO_BITRATE,
-                    '-maxrate', MAX_BITRATE,
-                    '-bufsize', BUFFER_SIZE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-vsync', 'vfr',  # 可变帧率同步，配合mpdecimate使用
-                    '-y',
-                    output_path
-                ]
-                
-                print(f"  执行CPU编码导出: {' '.join(cmd)}")
-                try:
-                    process = subprocess.run(cmd, check=True, capture_output=True, 
-                                          text=True, encoding='utf-8', startupinfo=get_startupinfo())
-                    
-                    print(f"  成功导出区间视频: {output_path}")
-                    # 记录成功的编码器
-                    _process_single_interval._successful_encoder = "cpu"
-                    return True
-                except subprocess.CalledProcessError as e:
-                    print(f"  CPU编码也失败了: {e}")
-                    print(f"  单视频剪切失败，将尝试使用多视频拼接方法")
-                    return False
-                except UnicodeDecodeError as e:
-                    print(f"  CPU编码解码错误: {e}")
-                    print(f"  单视频剪切失败，将尝试使用多视频拼接方法")
-                    return False
-                except Exception as e:
-                    print(f"  CPU编码发生意外错误: {str(e)}")
-                    print(f"  单视频剪切失败，将尝试使用多视频拼接方法")
-                    return False
-                
-            except Exception as e:
-                print(f"  处理视频时发生意外错误: {e}")
-                print(f"  尝试使用多视频拼接方法")
-                return False
-        
-        except Exception as e:
-            print(f"  处理视频时发生意外错误: {e}")
-            print(f"  尝试使用多视频拼接方法")
-            return False
-    
+                    try:
+                        print("  使用CPU编码...")
+                        cmd = [
+                            'ffmpeg',
+                            '-i', video["path"],
+                            '-filter_complex_script', filter_script_path,
+                            '-map', '[v]',
+                            '-map', '[a]'
+                        ]
+                        
+                        # 添加视频尺寸参数（如果有效）
+                        if video_width and video_height:
+                            cmd.extend(['-s', f'{video_width}x{video_height}'])
+                            
+                        # 添加编码器和参数
+                        cmd.extend([
+                            '-c:v', 'libx264',
+                            '-preset', CPU_ENCODE_PRESET,
+                            '-crf', CRF_VALUE
+                        ])
+                        
+                        # 添加码率参数（如果有效）
+                        if video_bitrate:
+                            bitrate_str = f"{max(1000000, video_bitrate)}"  # 确保至少1Mbps
+                            cmd.extend([
+                                '-b:v', bitrate_str,
+                                '-maxrate', f"{int(video_bitrate * 1.4)}",  # 最大码率比平均码率高40%
+                                '-bufsize', f"{int(video_bitrate * 2)}"     # 缓冲区大小为平均码率的2倍
+                            ])
+                        else:
+                            # 使用默认码率
+                            cmd.extend([
+                                '-b:v', VIDEO_BITRATE,
+                                '-maxrate', MAX_BITRATE,
+                                '-bufsize', BUFFER_SIZE
+                            ])
+                        
+                        # 添加音频和其他参数
+                        cmd.extend([
+                            '-c:a', 'aac',
+                            '-b:a', AUDIO_BITRATE,
+                            '-vsync', 'vfr',
+                            '-y',
+                            output_path
+                        ])
+                        
+                        print(f"  执行CPU编码导出: {' '.join(cmd)}")
+                        process = subprocess.run(cmd, check=True, capture_output=True, 
+                                               text=True, encoding='utf-8', startupinfo=get_startupinfo())
+                        
+                        print(f"  成功导出区间视频: {output_path}")
+                        return True
+                    except Exception as e:
+                        print(f"  使用已知编码器失败，尝试其他方法: {e}")
+                        # 继续使用其他方法
+
     # 如果没找到能完全覆盖区间的视频，返回False
     print("  没有找到能完全覆盖区间的单个视频，将使用多视频拼接")
     return False
