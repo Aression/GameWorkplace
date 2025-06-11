@@ -33,6 +33,10 @@ from exporter.core.models import TimeSegment
 # 视频素材覆盖范围
 VIDEO_COVER_RANGE = 20  # 视频素材通常以击杀前后 20 秒范围录制
 
+def _is_valid_datetime(*times):
+    """检查所有时间参数是否都是datetime类型"""
+    return all(isinstance(t, datetime) for t in times)
+
 def process_videos(input_dir, output_dir, lead=10, tail=2, threshold=30, min_kills=2, 
                   progress_callback=None, state_file=None, temp_dir=None, is_running=None):
     """处理视频文件，识别连杀片段并导出
@@ -316,7 +320,7 @@ def _process_killstreak_segments(valid_segments, videos, output_dir, temp_dir,
     return successful_exports
 
 def _process_single_interval(interval, videos, output_path, temp_dir, is_running=None):
-    """处理单个时间区间
+    """处理单个时间区间，优先使用无损复制，失败则尝试高质量编码
     
     尝试找到能够完全覆盖该区间的单个视频，并剪辑出对应片段
     
@@ -356,6 +360,29 @@ def _process_single_interval(interval, videos, output_path, temp_dir, is_running
             rel_start = (interval_start - video_start).total_seconds()
             duration = interval_duration
             
+            # 首先尝试无损复制
+            try:
+                print(f"  尝试无损复制剪辑...")
+                copy_cmd = [
+                    'ffmpeg',
+                    '-i', video["path"],
+                    '-ss', str(rel_start),
+                    '-t', str(duration),
+                    '-c', 'copy',  # 直接复制流，不重新编码
+                    '-avoid_negative_ts', 'make_zero',
+                    '-y',
+                    output_path
+                ]
+                
+                print(f"  执行无损复制: {' '.join(copy_cmd)}")
+                subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                             startupinfo=get_startupinfo())
+                print(f"  无损复制成功: {output_path}")
+                return True
+            except subprocess.CalledProcessError as e:
+                print(f"  无损复制失败，尝试高质量编码: {e}")
+            
+            # 如果无损复制失败，尝试高质量编码
             # 创建过滤器脚本
             filter_script_path = os.path.join(temp_dir, f'filter_{os.getpid()}_{int(time.time())}.txt')
             
@@ -417,39 +444,21 @@ def _process_single_interval(interval, videos, output_path, temp_dir, is_running
                             '-c:v', 'h264_nvenc',
                             '-preset', GPU_ENCODE_PRESET,
                             '-rc', 'vbr',
-                            '-cq', CQ_VALUE
-                        ])
-                        
-                        # 添加码率参数（如果有效）
-                        if video_bitrate:
-                            bitrate_str = f"{max(1000000, video_bitrate)}"  # 确保至少1Mbps
-                            cmd.extend([
-                                '-b:v', bitrate_str,
-                                '-maxrate', f"{int(video_bitrate * 1.4)}",  # 最大码率比平均码率高40%
-                                '-bufsize', f"{int(video_bitrate * 2)}"     # 缓冲区大小为平均码率的2倍
-                            ])
-                        else:
-                            # 使用默认码率
-                            cmd.extend([
-                                '-b:v', VIDEO_BITRATE,
-                                '-maxrate', MAX_BITRATE,
-                                '-bufsize', BUFFER_SIZE
-                            ])
-                        
-                        # 添加音频和其他参数
-                        cmd.extend([
-                            '-c:a', 'aac',
-                            '-b:a', AUDIO_BITRATE,
-                            '-vsync', 'vfr',  # 可变帧率同步
+                            '-cq', CQ_VALUE,
+                            '-b:v', VIDEO_BITRATE,
+                            '-maxrate', MAX_BITRATE,
+                            '-bufsize', BUFFER_SIZE,
+                            '-c:a', 'copy',  # 保持原始音频
+                            '-vsync', 'vfr',
                             '-y',
                             output_path
                         ])
                         
-                        print(f"  执行GPU编码导出: {' '.join(cmd)}")
+                        print(f"  执行高质量编码: {' '.join(cmd)}")
                         process = subprocess.run(cmd, check=True, capture_output=True, 
                                                text=True, encoding='utf-8', startupinfo=get_startupinfo())
                         
-                        print(f"  成功导出区间视频: {output_path}")
+                        print(f"  高质量编码成功: {output_path}")
                         return True
                     except Exception as e:
                         print(f"  使用已知编码器失败，尝试其他方法: {e}")
@@ -480,39 +489,21 @@ def _process_single_interval(interval, videos, output_path, temp_dir, is_running
                             '-c:v', 'hevc_nvenc',
                             '-preset', GPU_ENCODE_PRESET,
                             '-rc', 'vbr',
-                            '-cq', CQ_VALUE
-                        ])
-                        
-                        # 添加码率参数（如果有效）
-                        if video_bitrate:
-                            bitrate_str = f"{max(1000000, video_bitrate)}"  # 确保至少1Mbps
-                            cmd.extend([
-                                '-b:v', bitrate_str,
-                                '-maxrate', f"{int(video_bitrate * 1.4)}",  # 最大码率比平均码率高40%
-                                '-bufsize', f"{int(video_bitrate * 2)}"     # 缓冲区大小为平均码率的2倍
-                            ])
-                        else:
-                            # 使用默认码率
-                            cmd.extend([
-                                '-b:v', VIDEO_BITRATE,
-                                '-maxrate', MAX_BITRATE,
-                                '-bufsize', BUFFER_SIZE
-                            ])
-                        
-                        # 添加音频和其他参数
-                        cmd.extend([
-                            '-c:a', 'aac',
-                            '-b:a', AUDIO_BITRATE,
+                            '-cq', CQ_VALUE,
+                            '-b:v', VIDEO_BITRATE,
+                            '-maxrate', MAX_BITRATE,
+                            '-bufsize', BUFFER_SIZE,
+                            '-c:a', 'copy',  # 保持原始音频
                             '-vsync', 'vfr',
                             '-y',
                             output_path
                         ])
                         
-                        print(f"  执行GPU编码导出: {' '.join(cmd)}")
+                        print(f"  执行高质量编码: {' '.join(cmd)}")
                         process = subprocess.run(cmd, check=True, capture_output=True, 
                                                text=True, encoding='utf-8', startupinfo=get_startupinfo())
                         
-                        print(f"  成功导出区间视频: {output_path}")
+                        print(f"  高质量编码成功: {output_path}")
                         return True
                     except Exception as e:
                         print(f"  使用已知编码器失败，尝试其他方法: {e}")
@@ -520,7 +511,7 @@ def _process_single_interval(interval, videos, output_path, temp_dir, is_running
                 
                 elif encoder_name == "cpu":
                     try:
-                        print("  使用CPU编码...")
+                        print("  使用CPU高质量编码...")
                         cmd = [
                             'ffmpeg',
                             '-i', video["path"],
@@ -537,39 +528,21 @@ def _process_single_interval(interval, videos, output_path, temp_dir, is_running
                         cmd.extend([
                             '-c:v', 'libx264',
                             '-preset', CPU_ENCODE_PRESET,
-                            '-crf', CRF_VALUE
-                        ])
-                        
-                        # 添加码率参数（如果有效）
-                        if video_bitrate:
-                            bitrate_str = f"{max(1000000, video_bitrate)}"  # 确保至少1Mbps
-                            cmd.extend([
-                                '-b:v', bitrate_str,
-                                '-maxrate', f"{int(video_bitrate * 1.4)}",  # 最大码率比平均码率高40%
-                                '-bufsize', f"{int(video_bitrate * 2)}"     # 缓冲区大小为平均码率的2倍
-                            ])
-                        else:
-                            # 使用默认码率
-                            cmd.extend([
-                                '-b:v', VIDEO_BITRATE,
-                                '-maxrate', MAX_BITRATE,
-                                '-bufsize', BUFFER_SIZE
-                            ])
-                        
-                        # 添加音频和其他参数
-                        cmd.extend([
-                            '-c:a', 'aac',
-                            '-b:a', AUDIO_BITRATE,
+                            '-crf', CRF_VALUE,
+                            '-b:v', VIDEO_BITRATE,
+                            '-maxrate', MAX_BITRATE,
+                            '-bufsize', BUFFER_SIZE,
+                            '-c:a', 'copy',  # 保持原始音频
                             '-vsync', 'vfr',
                             '-y',
                             output_path
                         ])
                         
-                        print(f"  执行CPU编码导出: {' '.join(cmd)}")
+                        print(f"  执行高质量编码: {' '.join(cmd)}")
                         process = subprocess.run(cmd, check=True, capture_output=True, 
                                                text=True, encoding='utf-8', startupinfo=get_startupinfo())
                         
-                        print(f"  成功导出区间视频: {output_path}")
+                        print(f"  高质量编码成功: {output_path}")
                         return True
                     except Exception as e:
                         print(f"  使用已知编码器失败，尝试其他方法: {e}")
@@ -624,8 +597,9 @@ def _process_multiple_intervals(intervals, videos, output_path, temp_dir,
         for video in videos:
             video_start = video["start"]
             video_end = video["end"]
-            # 确保所有时间是datetime类型
-            if not all(isinstance(t, datetime) for t in [video_start, video_end, interval_start, interval_end]):
+            
+            # 检查时间类型
+            if not _is_valid_datetime(video_start, video_end, interval_start, interval_end):
                 print(f"  警告: 无效的时间类型，跳过视频 {video.get('filename', 'unknown')}")
                 continue
                 
@@ -1482,6 +1456,6 @@ def _finalize_processing(successful_exports, latest_time, state_file, all_files_
             print(f"将更新上次处理时间为: {latest_time}")
             save_last_processed_time(latest_time, state_file)
     elif not all_files_info:
-        pass  # 没有新文件处理，无需更新状态
+        print("\n没有新文件需要处理。")
     else:
         print("\n本次运行没有成功导出任何片段，不更新上次处理时间。") 

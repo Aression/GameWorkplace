@@ -44,11 +44,33 @@ def get_video_duration(video_path):
         return 0 
 
 def cut_video(input_path, output_path, start_time, duration):
-    """使用ffmpeg剪切视频，使用GPU加速，失败则回退CPU"""
+    """使用ffmpeg剪切视频，优先使用无损复制，失败则尝试高质量编码"""
     if duration <= 0:
         print(f"剪辑时间无效 (<=0): {duration} for {input_path}. 跳过剪辑。")
         return False
     try:
+        # 首先尝试无损复制
+        print(f"  尝试无损复制剪辑...")
+        copy_cmd = [
+            'ffmpeg', '-i', input_path,
+            '-ss', str(start_time),
+            '-t', str(duration),
+            '-c', 'copy',  # 直接复制流，不重新编码
+            '-avoid_negative_ts', 'make_zero',
+            '-y',
+            output_path
+        ]
+        
+        try:
+            print(f"  执行无损复制: {' '.join(copy_cmd)}")
+            subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                         startupinfo=get_startupinfo())
+            print(f"  无损复制成功: {output_path}")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"  无损复制失败，尝试高质量编码: {e}")
+        
+        # 如果无损复制失败，尝试高质量编码
         # 检查是否强制使用CPU编码
         if ENFORCE_CPU_ENCODE:
             print(f"  配置了强制使用CPU编码")
@@ -72,10 +94,9 @@ def cut_video(input_path, output_path, start_time, duration):
                 '-b:v', VIDEO_BITRATE,
                 '-maxrate', MAX_BITRATE,
                 '-bufsize', BUFFER_SIZE,
-                '-c:a', 'aac',
-                '-b:a', AUDIO_BITRATE,
-                '-map_metadata', '-1', # 移除元数据，避免潜在合并问题
-                '-avoid_negative_ts', 'make_zero', # 尝试解决时间戳问题
+                '-c:a', 'copy',  # 保持原始音频
+                '-map_metadata', '-1',
+                '-avoid_negative_ts', 'make_zero',
                 '-y',
                 output_path
             ]
@@ -93,25 +114,24 @@ def cut_video(input_path, output_path, start_time, duration):
                 '-b:v', VIDEO_BITRATE,
                 '-maxrate', MAX_BITRATE,
                 '-bufsize', BUFFER_SIZE,
-                '-c:a', 'aac',
-                '-b:a', AUDIO_BITRATE,
+                '-c:a', 'copy',  # 保持原始音频
                 '-map_metadata', '-1',
                 '-avoid_negative_ts', 'make_zero',
                 '-y',
                 output_path
             ]
         else:
-            # 没有可用的GPU编码器，直接使用CPU
-            raise ValueError("未检测到支持的GPU编码器，直接使用CPU编码")
+            # 没有可用的GPU编码器，使用CPU
+            raise ValueError("未检测到支持的GPU编码器，使用CPU编码")
         
-        print(f"  尝试GPU剪辑: {' '.join(cmd)}")
+        print(f"  尝试高质量编码: {' '.join(cmd)}")
         subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8',
                      startupinfo=get_startupinfo())
-        print(f"  GPU剪辑成功: {output_path}")
+        print(f"  高质量编码成功: {output_path}")
         return True
     except (subprocess.CalledProcessError, ValueError) as e:
-        print(f"GPU剪辑失败或不可用: {e}")
-        print("  尝试使用CPU编码...")
+        print(f"GPU编码失败或不可用: {e}")
+        print("  尝试使用CPU高质量编码...")
         try:
             cmd_cpu = [
                 'ffmpeg', '-i', input_path,
@@ -123,20 +143,19 @@ def cut_video(input_path, output_path, start_time, duration):
                 '-b:v', VIDEO_BITRATE,
                 '-maxrate', MAX_BITRATE,
                 '-bufsize', BUFFER_SIZE,
-                '-c:a', 'aac',
-                '-b:a', AUDIO_BITRATE,
+                '-c:a', 'copy',  # 保持原始音频
                 '-map_metadata', '-1',
                 '-avoid_negative_ts', 'make_zero',
                 '-y',
                 output_path
             ]
-            print(f"  尝试CPU剪辑: {' '.join(cmd_cpu)}")
+            print(f"  尝试CPU高质量编码: {' '.join(cmd_cpu)}")
             subprocess.run(cmd_cpu, check=True, capture_output=True, text=True, encoding='utf-8',
                          startupinfo=get_startupinfo())
-            print(f"  CPU剪辑成功: {output_path}")
+            print(f"  CPU高质量编码成功: {output_path}")
             return True
         except subprocess.CalledProcessError as e_cpu:
-            print(f"CPU剪辑也失败了 {input_path}: {e_cpu}")
+            print(f"CPU编码也失败了 {input_path}: {e_cpu}")
             return False
     except Exception as ex:
          print(f"剪辑过程中发生未知错误 {input_path}: {ex}")
@@ -150,6 +169,9 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
         output_path: 输出文件路径
         temp_dir: 临时文件目录
         remove_duplicates: 是否去除重复帧，默认使用REMOVE_DUPLICATE_FRAMES常量设置
+        
+    Returns:
+        bool: 是否成功合并视频
     """
     if not video_list:
         print("没有视频文件可供合并。")
@@ -187,7 +209,6 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
 
         if not valid_inputs:
             print("没有有效的临时文件可供合并。")
-            if os.path.exists(list_file): os.remove(list_file)
             return False
 
         # 首先合并视频到一个中间文件，不做去重处理
@@ -211,192 +232,11 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
             print(f"简单合并成功: {intermediate_file}")
         except subprocess.CalledProcessError as e:
             print(f"简单合并失败: {e}")
-            if os.path.exists(list_file): os.remove(list_file)
             return False
             
         # 然后，如果启用去重帧功能，对中间文件进行处理
         if remove_duplicates:
-            print(f"第二步：执行去重帧处理")
-            
-            # 使用scene检测+基于哈希的去重方法
-            # 1. 创建场景检测命令
-            scene_filter = f"select='gt(scene,{SCENE_CHANGE_THRESHOLD})',metadata=print:file='{temp_dir}/scenes.txt'"
-            frame_info_cmd = [
-                'ffmpeg',
-                '-i', intermediate_file,
-                '-vf', scene_filter,
-                '-f', 'null',
-                '-'
-            ]
-            
-            print(f"检测场景变化: {' '.join(frame_info_cmd)}")
-            try:
-                subprocess.run(frame_info_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
-                              startupinfo=get_startupinfo())
-                print(f"场景检测完成")
-            except subprocess.CalledProcessError as e:
-                print(f"场景检测失败: {e}")
-                # 继续执行，使用备用方法
-            
-            # 2. 使用较复杂的过滤器组合去重
-            # - 使用freezedetect检测静止帧
-            # - 使用mpdecimate检测连续相似帧
-            # - 调整FPS确保平滑播放
-            filter_complex = [
-                '-filter_complex', 
-                f'[0:v]freezedetect=n={FREEZE_DETECT_NOISE}:d={FREEZE_DETECT_DURATION},metadata=mode=print:file={temp_dir}/freeze.txt,mpdecimate=hi={DUPLICATE_THRESHOLD_HI}:lo={DUPLICATE_THRESHOLD_LO}:frac={DUPLICATE_FRACTION},setpts=N/FRAME_RATE/TB[v];[0:a]asetpts=N/SR/TB[a]',
-                '-map', '[v]', 
-                '-map', '[a]'
-            ]
-            
-            # 检查可用编码器
-            available_encoders = check_encoder_availability()
-            encode_type = "CPU"  # 默认使用CPU
-            
-            # 设置命令基础部分
-            cmd_base = [
-                'ffmpeg',
-                '-i', intermediate_file,
-            ] + filter_complex
-            
-            # 检查是否强制使用CPU编码
-            if ENFORCE_CPU_ENCODE:
-                print("配置了强制使用CPU编码")
-                encode_type = "CPU"
-            # 如果没有强制使用CPU，则根据可用性选择编码器
-            elif "h264_nvenc" in available_encoders:
-                # 使用GPU H.264编码
-                print("使用NVIDIA H.264硬件加速最终编码...")
-                encode_type = "NVENC_H264"
-            elif "hevc_nvenc" in available_encoders:
-                # 使用GPU HEVC编码
-                print("使用NVIDIA HEVC硬件加速最终编码...")
-                encode_type = "NVENC_HEVC"
-            else:
-                # 使用CPU
-                print("未检测到支持的硬件编码器，使用CPU编码...")
-                encode_type = "CPU"
-            
-            # 根据选择的编码器添加相应的命令行参数
-            if encode_type == "NVENC_H264":
-                # NVIDIA H.264
-                cmd = cmd_base + [
-                    '-c:v', 'h264_nvenc',
-                    '-preset', GPU_ENCODE_PRESET,
-                    '-rc', 'vbr',
-                    '-cq', CQ_VALUE,
-                    '-b:v', VIDEO_BITRATE,
-                    '-maxrate', MAX_BITRATE,
-                    '-bufsize', BUFFER_SIZE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-vsync', 'vfr',  # 可变帧率同步
-                    '-y',
-                    output_path
-                ]
-            elif encode_type == "NVENC_HEVC":
-                # NVIDIA HEVC
-                cmd = cmd_base + [
-                    '-c:v', 'hevc_nvenc',
-                    '-preset', GPU_ENCODE_PRESET,
-                    '-rc', 'vbr',
-                    '-cq', CQ_VALUE,
-                    '-b:v', VIDEO_BITRATE,
-                    '-maxrate', MAX_BITRATE,
-                    '-bufsize', BUFFER_SIZE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-vsync', 'vfr',  # 可变帧率同步
-                    '-y',
-                    output_path
-                ]
-            else:
-                # CPU编码
-                cmd = cmd_base + [
-                    '-c:v', 'libx264',
-                    '-preset', CPU_ENCODE_PRESET,
-                    '-crf', CRF_VALUE,
-                    '-b:v', VIDEO_BITRATE,
-                    '-maxrate', MAX_BITRATE,
-                    '-bufsize', BUFFER_SIZE,
-                    '-c:a', 'aac',
-                    '-b:a', AUDIO_BITRATE,
-                    '-vsync', 'vfr',  # 可变帧率同步
-                    '-y',
-                    output_path
-                ]
-            
-            print(f"执行去重+重编码命令: {' '.join(cmd)}")
-            try:
-                subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8',
-                            startupinfo=get_startupinfo())
-                print(f"视频处理成功: {output_path}")
-                return True
-            except subprocess.CalledProcessError as e:
-                print(f"视频处理失败，尝试回退到CPU编码: {e}")
-                # 如果使用GPU编码失败，回退到CPU编码
-                if encode_type != "CPU":
-                    try:
-                        # CPU编码回退
-                        cpu_cmd = cmd_base + [
-                            '-c:v', 'libx264',
-                            '-preset', CPU_ENCODE_PRESET,
-                            '-crf', CRF_VALUE,
-                            '-b:v', VIDEO_BITRATE,
-                            '-maxrate', MAX_BITRATE,
-                            '-bufsize', BUFFER_SIZE,
-                            '-c:a', 'aac',
-                            '-b:a', AUDIO_BITRATE,
-                            '-vsync', 'vfr',  # 可变帧率同步
-                            '-y',
-                            output_path
-                        ]
-                        
-                        print(f"使用CPU编码重试: {' '.join(cpu_cmd)}")
-                        subprocess.run(cpu_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
-                                      startupinfo=get_startupinfo())
-                        print(f"CPU编码成功: {output_path}")
-                        return True
-                    except subprocess.CalledProcessError as e_cpu:
-                        print(f"CPU编码也失败了: {e_cpu}")
-                        
-                        # 最后尝试简单复制
-                        try:
-                            copy_cmd = [
-                                'ffmpeg',
-                                '-i', intermediate_file,
-                                '-c', 'copy',
-                                '-y',
-                                output_path
-                            ]
-                            
-                            print(f"尝试直接复制流: {' '.join(copy_cmd)}")
-                            subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
-                                        startupinfo=get_startupinfo())
-                            print(f"流复制成功: {output_path}")
-                            return True
-                        except subprocess.CalledProcessError as e_copy:
-                            print(f"所有尝试都失败了: {e_copy}")
-                            return False
-                else:
-                    # 最后尝试简单复制
-                    try:
-                        copy_cmd = [
-                            'ffmpeg',
-                            '-i', intermediate_file,
-                            '-c', 'copy',
-                            '-y',
-                            output_path
-                        ]
-                        
-                        print(f"尝试直接复制流: {' '.join(copy_cmd)}")
-                        subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
-                                    startupinfo=get_startupinfo())
-                        print(f"流复制成功: {output_path}")
-                        return True
-                    except subprocess.CalledProcessError as e_copy:
-                        print(f"所有尝试都失败了: {e_copy}")
-                        return False
+            return _process_duplicate_removal(intermediate_file, output_path, temp_dir)
         else:
             # 如果不去重帧，直接复制中间文件
             print(f"不进行去重，直接复制中间文件到目标位置")
@@ -411,16 +251,152 @@ def concat_videos(video_list, output_path, temp_dir=None, remove_duplicates=None
                 
     finally:
         # 清理临时文件
+        cleanup_temp_files(temp_dir, [
+            intermediate_file, list_file,
+            f"{temp_dir}/scenes.txt", f"{temp_dir}/freeze.txt"
+        ])
+
+def _process_duplicate_removal(intermediate_file, output_path, temp_dir):
+    """处理视频去重，优先使用无损复制，失败则尝试高质量编码
+    
+    Args:
+        intermediate_file: 中间文件路径
+        output_path: 输出文件路径
+        temp_dir: 临时文件目录
+        
+    Returns:
+        bool: 是否成功处理
+    """
+    print(f"第二步：执行去重帧处理")
+    
+    # 首先尝试无损复制
+    try:
+        print(f"  尝试无损复制...")
+        copy_cmd = [
+            'ffmpeg',
+            '-i', intermediate_file,
+            '-c', 'copy',
+            '-y',
+            output_path
+        ]
+        print(f"  执行无损复制: {' '.join(copy_cmd)}")
+        subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                     startupinfo=get_startupinfo())
+        print(f"  无损复制成功: {output_path}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  无损复制失败，尝试高质量编码: {e}")
+    
+    # 如果无损复制失败，尝试高质量编码
+    # 使用scene检测+基于哈希的去重方法
+    # 1. 创建场景检测命令
+    scene_filter = f"select='gt(scene,{SCENE_CHANGE_THRESHOLD})',metadata=print:file='{temp_dir}/scenes.txt'"
+    frame_info_cmd = [
+        'ffmpeg',
+        '-i', intermediate_file,
+        '-vf', scene_filter,
+        '-f', 'null',
+        '-'
+    ]
+    
+    print(f"检测场景变化: {' '.join(frame_info_cmd)}")
+    try:
+        subprocess.run(frame_info_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                      startupinfo=get_startupinfo())
+        print(f"场景检测完成")
+    except subprocess.CalledProcessError as e:
+        print(f"场景检测失败: {e}")
+        # 继续执行，使用备用方法
+    
+    # 2. 使用较复杂的过滤器组合去重
+    filter_complex = [
+        '-filter_complex', 
+        f'[0:v]freezedetect=n={FREEZE_DETECT_NOISE}:d={FREEZE_DETECT_DURATION},metadata=mode=print:file={temp_dir}/freeze.txt,mpdecimate=hi={DUPLICATE_THRESHOLD_HI}:lo={DUPLICATE_THRESHOLD_LO}:frac={DUPLICATE_FRACTION},setpts=N/FRAME_RATE/TB[v];[0:a]asetpts=N/SR/TB[a]',
+        '-map', '[v]', 
+        '-map', '[a]'
+    ]
+    
+    # 检查可用编码器
+    available_encoders = check_encoder_availability()
+    encode_type = "CPU" if ENFORCE_CPU_ENCODE or not available_encoders.get("h264_nvenc", False) else "GPU"
+    
+    # 根据编码类型选择参数
+    if encode_type == "GPU":
+        encode_params = [
+            '-c:v', 'h264_nvenc',
+            '-preset', GPU_ENCODE_PRESET,
+            '-cq', CQ_VALUE,
+            '-b:v', VIDEO_BITRATE,
+            '-maxrate', MAX_BITRATE,
+            '-bufsize', BUFFER_SIZE,
+            '-rc', 'vbr',
+            '-rc-lookahead', '32'
+        ]
+    else:
+        encode_params = [
+            '-c:v', 'libx264',
+            '-preset', CPU_ENCODE_PRESET,
+            '-crf', CRF_VALUE,
+            '-b:v', VIDEO_BITRATE,
+            '-maxrate', MAX_BITRATE,
+            '-bufsize', BUFFER_SIZE
+        ]
+    
+    # 构建完整的去重命令
+    dedup_cmd = [
+        'ffmpeg',
+        '-i', intermediate_file,
+        *filter_complex,
+        *encode_params,
+        '-c:a', 'copy',  # 保持原始音频
+        '-y',
+        output_path
+    ]
+    
+    print(f"执行高质量编码: {' '.join(dedup_cmd)}")
+    try:
+        subprocess.run(dedup_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                      startupinfo=get_startupinfo())
+        print(f"高质量编码成功: {output_path}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"高质量编码失败: {e}")
+        # 尝试备用方法
         try:
-            cleanup_temp_files(temp_dir, [
-                intermediate_file, list_file,
-                f"{temp_dir}/scenes.txt", f"{temp_dir}/freeze.txt"
-            ])
-            
-        except Exception as e:
-            print(f"合并视频时发生错误: {e}")
-            cleanup_temp_files(temp_dir, [list_file, intermediate_file] if intermediate_file else [list_file])
-            return False
+            # 使用更简单的过滤器
+            simple_filter_cmd = [
+                'ffmpeg',
+                '-i', intermediate_file,
+                '-vf', f'mpdecimate=hi={DUPLICATE_THRESHOLD_HI}:lo={DUPLICATE_THRESHOLD_LO}:frac={DUPLICATE_FRACTION},setpts=N/FRAME_RATE/TB',
+                *encode_params,
+                '-c:a', 'copy',  # 保持原始音频
+                '-y',
+                output_path
+            ]
+            print(f"尝试简单高质量编码: {' '.join(simple_filter_cmd)}")
+            subprocess.run(simple_filter_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                          startupinfo=get_startupinfo())
+            print(f"简单高质量编码成功: {output_path}")
+            return True
+        except subprocess.CalledProcessError as e_simple:
+            print(f"简单高质量编码失败: {e_simple}")
+            # 最后尝试直接复制
+            try:
+                copy_cmd = [
+                    'ffmpeg',
+                    '-i', intermediate_file,
+                    '-c', 'copy',
+                    '-y',
+                    output_path
+                ]
+                print(f"尝试直接复制流: {' '.join(copy_cmd)}")
+                subprocess.run(copy_cmd, check=True, capture_output=True, text=True, encoding='utf-8',
+                            startupinfo=get_startupinfo())
+                print(f"流复制成功: {output_path}")
+                return True
+            except subprocess.CalledProcessError as e_copy:
+                print(f"所有尝试都失败了: {e_copy}")
+                return False
 
 def cleanup_temp_files(temp_dir, file_list):
     """清理临时文件

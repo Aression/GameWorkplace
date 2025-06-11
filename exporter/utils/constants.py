@@ -13,21 +13,19 @@ TYPICAL_KILL_POSITION = 20  # 击杀通常出现在视频的位置（秒）
 KILL_LEAD_TIME = 15  # 击杀前保留时间（秒）
 KILL_TAIL_TIME = 5  # 击杀后保留时间（秒）
 
-# 视频编码参数
-GPU_ENCODE_PRESET = 'p3'  # NVENC预设
-CPU_ENCODE_PRESET = 'medium'  # CPU预设
-VIDEO_BITRATE = '5M'  # 视频码率
-MAX_BITRATE = '7M'  # 最大码率
-BUFFER_SIZE = '5M'  # 缓冲区大小
-AUDIO_BITRATE = '320k'  # 音频码率
-CRF_VALUE = '23'  # 恒定质量因子
-CQ_VALUE = '25'  # NVENC质量值
+# 视频编码参数 - 设置为无损或最高质量
+GPU_ENCODE_PRESET = 'p7'  # NVENC最高质量预设
+CPU_ENCODE_PRESET = 'veryslow'  # CPU最高质量预设
+VIDEO_BITRATE = '0'  # 不限制码率
+MAX_BITRATE = '0'  # 不限制最大码率
+BUFFER_SIZE = '0'  # 不限制缓冲区大小
+AUDIO_BITRATE = 'copy'  # 保持原始音频质量
+CRF_VALUE = '0'  # 最高质量（无损）
+CQ_VALUE = '0'  # 最高质量（无损）
 
-# 强制使用CPU编码，避免GPU编码问题
-ENFORCE_CPU_ENCODE = False
-
-# GPU编码调试模式，输出诊断信息
-DEBUG_GPU_ENCODER = True
+# 编码器设置
+ENFORCE_CPU_ENCODE = False  # 强制使用CPU编码
+DEBUG_GPU_ENCODER = True  # GPU编码调试模式
 
 # 去重设置 
 REMOVE_DUPLICATE_FRAMES = True  # 是否启用去重帧功能
@@ -38,7 +36,7 @@ DUPLICATE_THRESHOLD_HI = 64  # 高阈值：像素块差异阈值
 DUPLICATE_THRESHOLD_LO = 32  # 低阈值：整帧差异阈值
 DUPLICATE_FRACTION = 0.33  # 相似帧占比阈值
 
-# GPU加速哈希计算设置
+# GPU加速设置
 USE_GPU_HASH = True  # 是否使用GPU加速哈希计算
 GPU_HASH_SIZE = 16  # 感知哈希大小，越大越精确但更耗资源
 HASH_THRESHOLD = 5  # 哈希差异阈值，越小越严格

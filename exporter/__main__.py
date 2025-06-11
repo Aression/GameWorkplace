@@ -6,13 +6,11 @@
 
 import os
 import sys
-import tempfile
 import argparse
 from pathlib import Path
 
 from exporter.core.processor import process_videos
 from exporter.utils.file_utils import convert_windows_path
-from exporter.utils.constants import TYPICAL_VIDEO_LENGTH, TYPICAL_KILL_POSITION
 
 def parse_args():
     """解析命令行参数"""
@@ -40,7 +38,7 @@ def parse_args():
                        help='状态文件路径，用于记录处理进度')
     
     parser.add_argument('--temp-dir',
-                       help='临时文件目录，默认为系统临时目录')
+                       help='临时文件目录，用于存储处理过程中的中间文件')
     
     return parser.parse_args()
 
