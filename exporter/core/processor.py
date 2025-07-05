@@ -276,8 +276,11 @@ def _process_killstreak_segments(valid_segments, videos, output_dir, temp_dir,
         # 3. 生成输出文件名
         timestamp_str = kill_times_sorted[0].strftime("%Y%m%d_%H%M%S")
         kills_count = len(kill_times_sorted)
+        date_folder = kill_times_sorted[0].strftime("%Y-%m-%d")
+        output_subdir = os.path.join(output_dir, date_folder)
+        os.makedirs(output_subdir, exist_ok=True)
         output_filename = f"连杀_{kills_count}杀_{timestamp_str}.mp4"
-        final_output_path = os.path.join(output_dir, output_filename)
+        final_output_path = os.path.join(output_subdir, output_filename)
         
         # 4. 准备过滤器脚本文件
         filter_script_path = os.path.join(temp_dir, f"filter_script_{timestamp_str}.txt")

@@ -584,3 +584,31 @@ def get_video_info(video_path):
     except Exception as e:
         print(f"获取视频信息过程中发生未知错误 {video_path}: {e}")
         return None 
+
+def extract_audio(input_path, output_path, audio_format='mp3'):
+    """从视频文件中提取音频轨道，保存为指定格式（默认mp3）"""
+    try:
+        if audio_format == 'mp3':
+            acodec = 'libmp3lame'
+            ext = '.mp3'
+        elif audio_format == 'wav':
+            acodec = 'pcm_s16le'
+            ext = '.wav'
+        else:
+            raise ValueError(f'不支持的音频格式: {audio_format}')
+        if not output_path.lower().endswith(ext):
+            output_path += ext
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-vn',  # 不处理视频
+            '-acodec', acodec,
+            '-y',
+            output_path
+        ]
+        print(f"提取音频: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8', startupinfo=get_startupinfo())
+        print(f"音频提取成功: {output_path}")
+        return True
+    except Exception as e:
+        print(f"音频提取失败: {e}")
+        return False 

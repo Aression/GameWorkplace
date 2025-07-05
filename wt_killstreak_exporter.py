@@ -395,6 +395,20 @@ class MainInterface(ScrollArea):
         self.open_output_button.setMinimumHeight(40)
         self.open_output_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
+        # 新增：按日期分类整理按钮
+        self.organize_by_date_button = PushButton("按日期分类整理")
+        self.organize_by_date_button.setIcon(FIF.CALENDAR)
+        self.organize_by_date_button.clicked.connect(self._organize_by_date)
+        self.organize_by_date_button.setMinimumHeight(40)
+        self.organize_by_date_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        
+        # 新增：提取音频按钮
+        self.extract_audio_button = PushButton("提取音频")
+        self.extract_audio_button.setIcon(FIF.MUSIC)
+        self.extract_audio_button.clicked.connect(self._extract_audio)
+        self.extract_audio_button.setMinimumHeight(40)
+        self.extract_audio_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        
         # 重置处理时间戳按钮
         self.reset_button = PushButton("重置处理时间戳")
         self.reset_button.setIcon(FIF.SYNC)
@@ -407,6 +421,9 @@ class MainInterface(ScrollArea):
         button_grid.addWidget(self.stop_button, 0, 1)
         button_grid.addWidget(self.open_output_button, 1, 0)
         button_grid.addWidget(self.reset_button, 1, 1)
+        # 新增：添加分类按钮和音频按钮
+        button_grid.addWidget(self.organize_by_date_button, 2, 0, 1, 2)
+        button_grid.addWidget(self.extract_audio_button, 3, 0, 1, 2)
         
         # 使两列宽度相等
         button_grid.setColumnStretch(0, 1)
@@ -738,6 +755,106 @@ class MainInterface(ScrollArea):
         """更新扫描状态"""
         self.is_scanning = is_scanning
         self._update_progress(0, 0)
+
+    def _organize_by_date(self):
+        """按日期分类整理视频文件"""
+        input_dir = self.input_dir_edit.text()
+        output_dir = self.output_dir_edit.text()
+        if not input_dir or not os.path.exists(input_dir):
+            InfoBar.warning(
+                title="警告",
+                content="请选择有效的输入目录",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP
+            )
+            return
+        if not output_dir or not os.path.exists(output_dir):
+            InfoBar.warning(
+                title="警告",
+                content="请选择有效的输出目录",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP
+            )
+            return
+        from exporter.utils.file_utils import parse_video_time
+        import shutil
+        moved = 0
+        for fname in os.listdir(input_dir):
+            if not fname.lower().endswith('.mp4'):
+                continue
+            dt = parse_video_time(fname)
+            if not dt:
+                continue
+            date_str = dt.strftime('%Y-%m-%d')
+            target_dir = os.path.join(output_dir, date_str)
+            os.makedirs(target_dir, exist_ok=True)
+            src = os.path.join(input_dir, fname)
+            dst = os.path.join(target_dir, fname)
+            try:
+                shutil.move(src, dst)
+                moved += 1
+            except Exception as e:
+                self._update_log(f"❌ 移动失败: {fname} -> {target_dir}，原因: {e}")
+        if moved:
+            InfoBar.success(
+                title="整理完成",
+                content=f"已按日期整理 {moved} 个视频文件。",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP,
+                duration=3000
+            )
+            self._update_log(f"✅ 已按日期整理 {moved} 个视频文件")
+        else:
+            InfoBar.info(
+                title="无可整理文件",
+                content="未发现可整理的视频文件。",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP,
+                duration=3000
+            )
+            self._update_log("ℹ️ 未发现可整理的视频文件")
+
+    def _extract_audio(self):
+        """选择视频并提取音频到输出/music目录"""
+        output_dir = self.output_dir_edit.text()
+        if not output_dir or not os.path.exists(output_dir):
+            InfoBar.warning(
+                title="警告",
+                content="请选择有效的输出目录",
+                parent=self.parent_window,
+                position=InfoBarPosition.TOP
+            )
+            return
+        file_dialog = QFileDialog(self, "选择要提取音频的视频文件", os.path.expanduser("~"))
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        file_dialog.setNameFilter("视频文件 (*.mp4 *.avi *.mov *.mkv)")
+        if file_dialog.exec_():
+            video_path = file_dialog.selectedFiles()[0]
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+            music_dir = os.path.join(output_dir, "music")
+            os.makedirs(music_dir, exist_ok=True)
+            audio_path = os.path.join(music_dir, video_name + ".mp3")
+            from exporter.utils.ffmpeg_utils import extract_audio
+            self._update_log(f"开始提取音频: {video_path}")
+            success = extract_audio(video_path, audio_path, audio_format='mp3')
+            if success:
+                InfoBar.success(
+                    title="提取成功",
+                    content=f"音频已保存到: {audio_path}",
+                    parent=self.parent_window,
+                    position=InfoBarPosition.TOP,
+                    duration=3000
+                )
+                self._update_log(f"✅ 音频已保存到: {audio_path}")
+            else:
+                InfoBar.error(
+                    title="提取失败",
+                    content="音频提取失败，请检查源文件格式或FFmpeg环境。",
+                    parent=self.parent_window,
+                    position=InfoBarPosition.TOP,
+                    duration=4000
+                )
+                self._update_log("❌ 音频提取失败")
 
 # 设置界面
 class SettingsInterface(QDialog):
